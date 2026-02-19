@@ -1,9 +1,17 @@
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
 
-app = FastAPI(title="EOS-Webapp Backend")
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import HTMLResponse
+from sqlalchemy.orm import Session
+
+from app.api.live_values import router as live_values_router
+from app.api.mappings import router as mappings_router
+from app.core.config import Settings, get_settings
+from app.core.logging import configure_logging
+from app.db.session import SessionLocal, check_db_connection, get_db
+from app.services.mqtt_ingest import MqttIngestService
 
 PROGRESS_FILE = Path("/data/progress.log")
 WORKLOG_FILE = Path("/data/worklog.md")
@@ -16,18 +24,61 @@ def _tail(path: Path, lines: int = 30) -> list[str]:
     return content[-lines:]
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    configure_logging()
+    settings = get_settings()
+    mqtt_service = MqttIngestService(settings=settings, session_factory=SessionLocal)
+    app.state.settings = settings
+    app.state.mqtt_service = mqtt_service
+    mqtt_service.start()
+    mqtt_service.sync_subscriptions_from_db()
+    try:
+        yield
+    finally:
+        mqtt_service.stop()
+
+
+app = FastAPI(title="EOS-Webapp Backend", lifespan=lifespan)
+app.include_router(mappings_router)
+app.include_router(live_values_router)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "backend"}
 
 
 @app.get("/status")
-def status():
+def status(request: Request, db: Session = Depends(get_db)):
+    db_ok, db_error = check_db_connection(db)
+    mqtt_service: MqttIngestService | None = getattr(request.app.state, "mqtt_service", None)
+    settings: Settings | None = getattr(request.app.state, "settings", None)
+
+    db_status: dict[str, object] = {"ok": db_ok}
+    if db_error:
+        db_status["error"] = db_error
+
+    mqtt_status: dict[str, object]
+    telemetry_status: dict[str, object]
+    if mqtt_service is None:
+        mqtt_status = {"connected": False, "error": "MQTT service not initialized"}
+        telemetry_status = {"messages_received": 0, "last_message_ts": None}
+    else:
+        mqtt_status = mqtt_service.get_connection_status()
+        telemetry_status = mqtt_service.get_telemetry_status()
+
     return {
         "status": "working",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "progress_tail": _tail(PROGRESS_FILE, 40),
         "worklog_tail": _tail(WORKLOG_FILE, 40),
+        "db": db_status,
+        "mqtt": mqtt_status,
+        "telemetry": telemetry_status,
+        "config": {
+            "live_stale_seconds": settings.live_stale_seconds if settings else None,
+        },
     }
 
 
@@ -54,6 +105,10 @@ def _live_html() -> str:
   <div class='muted'>Auto-refresh every 5s</div>
   <div class='card'><b>Timestamp:</b> <span id='ts'>{ts}</span></div>
   <div class='card'>
+    <h3>DB / MQTT / Telemetry</h3>
+    <pre id='runtime'>Loading runtime status...</pre>
+  </div>
+  <div class='card'>
     <h3>Progress Log (live)</h3>
     <pre id='progress'>{progress}</pre>
   </div>
@@ -68,6 +123,11 @@ def _live_html() -> str:
       document.getElementById('ts').textContent = data.timestamp;
       document.getElementById('progress').textContent = (data.progress_tail || []).join('\\n') || 'No progress entries yet';
       document.getElementById('worklog').textContent = (data.worklog_tail || []).join('\\n') || 'No worklog entries yet';
+      document.getElementById('runtime').textContent = JSON.stringify({{
+        db: data.db || null,
+        mqtt: data.mqtt || null,
+        telemetry: data.telemetry || null
+      }}, null, 2);
     }}
     load();
     setInterval(load, 5000);

@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   eos:
     image: akkudoktor/eos:latest
@@ -26,9 +24,9 @@ services:
     container_name: eos-webapp-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: eos_webapp
-      POSTGRES_USER: eos_webapp
-      POSTGRES_PASSWORD: eos_webapp_dev
+      POSTGRES_DB: ${POSTGRES_DB:-eos_webapp}
+      POSTGRES_USER: ${POSTGRES_USER:-eos_webapp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eos_webapp_dev}
     ports:
       - "5432:5432"
     volumes:
@@ -41,6 +39,13 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://eos_webapp:eos_webapp_dev@postgres:5432/eos_webapp}
+      MQTT_BROKER_HOST: ${MQTT_BROKER_HOST:-192.168.3.8}
+      MQTT_BROKER_PORT: ${MQTT_BROKER_PORT:-1883}
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-eos-webapp-backend}
+      MQTT_QOS: ${MQTT_QOS:-0}
+      LIVE_STALE_SECONDS: ${LIVE_STALE_SECONDS:-120}
     volumes:
       - ../runtime:/data
     depends_on:
