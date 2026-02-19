@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+  eos:
+    image: akkudoktor/eos:latest
+    container_name: eos
+    restart: unless-stopped
+    ports:
+      - "8503:8503"
+      - "8504:8504"
+    environment:
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      EOS_SERVER__HOST: "0.0.0.0"
+      EOS_SERVER__EOSDASH_HOST: "0.0.0.0"
+      EOS_SERVER__EOSDASH_PORT: "8504"
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 65535
+        hard: 65535
+
+  postgres:
+    image: postgres:16
+    container_name: eos-webapp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: eos_webapp
+      POSTGRES_USER: eos_webapp
+      POSTGRES_PASSWORD: eos_webapp_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  backend:
+    image: hashicorp/http-echo:1.0
+    container_name: eos-webapp-backend
+    restart: unless-stopped
+    command: ["-text=EOS-Webapp backend scaffold running"]
+    ports:
+      - "8080:5678"
+    depends_on:
+      - postgres
+      - eos
+
+  frontend:
+    image: hashicorp/http-echo:1.0
+    container_name: eos-webapp-frontend
+    restart: unless-stopped
+    command: ["-text=EOS-Webapp frontend scaffold running"]
+    ports:
+      - "3000:5678"
+    depends_on:
+      - backend
+
+volumes:
+  pg_data:
