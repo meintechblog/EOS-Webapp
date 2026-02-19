@@ -16,6 +16,7 @@ This runbook covers the first working end-to-end slice:
 - `POST /api/mappings`
 - `PUT /api/mappings/{id}`
 - `GET /api/live-values`
+- `GET /api/eos-fields`
 - `GET /status`
 
 ## 1) Create mapping
@@ -91,4 +92,3 @@ Default stale threshold is `LIVE_STALE_SECONDS=120`.
 
 - if no new message arrives for > 120s, `GET /api/live-values` returns `status: "stale"`
 - mappings without telemetry return `status: "never"`
-

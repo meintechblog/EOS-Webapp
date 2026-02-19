@@ -33,3 +33,10 @@
 - Added polling every 5 seconds against `GET /api/live-values`.
 - Kept middle/right panes as structured placeholders for next slices.
 - Added slice 2 runbook and README updates.
+
+## 2026-02-19 (Slice 2 UX update)
+- Added backend endpoint `GET /api/eos-fields` to provide EOS field catalog from EOS OpenAPI + measurement keys (+ fallback set).
+- Updated left-pane `New Mapping` form:
+  - EOS field is now a dropdown with custom fallback option.
+  - Unit is now a field-aware dropdown with custom fallback option.
+  - Added inline help text explaining `payload_path` behavior with JSON example.

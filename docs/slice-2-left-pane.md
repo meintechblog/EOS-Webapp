@@ -12,6 +12,9 @@ The frontend container proxies `/api`, `/health`, `/status`, and `/stats/*` to t
 ## Implemented in this slice
 
 - Mapping create form (`eos_field`, `mqtt_topic`, `payload_path`, `unit`, `enabled`)
+  - EOS field dropdown from `GET /api/eos-fields` (EOS OpenAPI + measurement keys + fallback fields)
+  - unit dropdown with field-aware suggestions
+  - custom fallback for both field and unit
 - Mapping list
 - Per-mapping live telemetry card:
   - current value
@@ -51,3 +54,14 @@ mosquitto_pub -h 192.168.3.8 -t eos/input/pv_power_w -m '1234'
 - status flips to `healthy`
 - after inactivity > 120s status becomes `stale`
 
+## Notes on `payload_path`
+
+`payload_path` is used only for JSON payloads.
+
+Example:
+
+- payload: `{\"sensor\":{\"power\":987}}`
+- `payload_path`: `sensor.power`
+- stored `parsed_value`: `987`
+
+If payload is a plain scalar (for example `1234`), keep `payload_path` empty.

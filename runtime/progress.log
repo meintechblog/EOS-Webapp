@@ -7,3 +7,5 @@
 [2026-02-19T15:16:00Z] Slice-2 frontend implemented: real 3-pane UI, left-pane mapping/live cards, polling, and nginx backend proxy
 [2026-02-19T15:17:10Z] Verified frontend proxy E2E via :3000 (POST/GET mappings + live-values)
 [2026-02-19T15:19:40Z] Cleaned temporary proxy test mapping and re-verified frontend API proxy on :3000
+[2026-02-19T15:30:40Z] Added EOS-field catalog endpoint + frontend dropdowns for EOS field/unit + payload_path inline help
+[2026-02-19T15:31:40Z] Verified /api/eos-fields via backend+frontend proxy and cleaned temporary test mapping (restored baseline mappings)

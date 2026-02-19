@@ -98,7 +98,7 @@ Then open `http://192.168.3.157:8080/status/live` in your browser.
 ## Slice 2 UI flow (left pane)
 
 1. Open `http://192.168.3.157:3000`
-2. Create mappings in the `Inputs` pane
+2. Create mappings in the `Inputs` pane (EOS field dropdown from `GET /api/eos-fields`, field-aware unit suggestion, optional `payload_path` for JSON extraction).
 3. Publish MQTT test messages
 4. Watch live values/status (`healthy | stale | never`) in mapping cards
 5. Enable/disable mapping directly from the list
