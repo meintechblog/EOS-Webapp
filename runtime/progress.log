@@ -1,2 +1,5 @@
 [bootstrap] waiting for first live task update
 [2026-02-19T13:47:15Z] STOP requested by Jörg. Handover documentation prepared for VS Code continuation.
+[2026-02-19T13:47:20Z] Handover docs synced to VM working folder after STOP
+[2026-02-19T15:05:00Z] Slice-1 backend implemented: config+DB+migrations+MQTT+mapping/live APIs+status integration
+[2026-02-19T15:06:30Z] Verified slice-1 E2E via docker-compose + alembic + curl + mqtt publish (scalar and JSON path)
