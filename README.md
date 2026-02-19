@@ -4,7 +4,9 @@ Local-first web application as an interface layer for [Akkudoktor-EOS](https://g
 
 ## Status
 
-Sprint 1 slice 1 implemented: MQTT ingest, DB persistence, mapping API, live values API.
+Sprint 1 slice 1 and slice 2 implemented:
+- MQTT ingest, DB persistence, mapping API, live values API
+- First real 3-pane frontend with functional left pane (mapping form/list/live status)
 
 ## Goals (v1)
 
@@ -50,6 +52,14 @@ curl -s http://192.168.3.157:8080/health
 curl -s http://192.168.3.157:8080/status | jq
 ```
 
+5. Open frontend UI:
+
+```bash
+xdg-open http://192.168.3.157:3000
+```
+
+If `xdg-open` is not available, open the URL manually in your browser.
+
 ## Slice 1 API test flow
 
 1. Create mapping:
@@ -85,7 +95,16 @@ curl -s http://192.168.3.157:8080/status | jq
 
 Then open `http://192.168.3.157:8080/status/live` in your browser.
 
+## Slice 2 UI flow (left pane)
+
+1. Open `http://192.168.3.157:3000`
+2. Create mappings in the `Inputs` pane
+3. Publish MQTT test messages
+4. Watch live values/status (`healthy | stale | never`) in mapping cards
+5. Enable/disable mapping directly from the list
+
 ## Notes
 
 - Initial repository starts private; target is public release once stable and documented.
 - For detailed slice runbook and examples see `docs/slice-1-mqtt-db-api.md`.
+- For UI slice details see `docs/slice-2-left-pane.md`.
