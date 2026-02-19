@@ -6,3 +6,4 @@
 [2026-02-19T15:07:40Z] Verified dynamic MQTT subscription diff on mapping enable/disable via /api/mappings/{id}
 [2026-02-19T15:16:00Z] Slice-2 frontend implemented: real 3-pane UI, left-pane mapping/live cards, polling, and nginx backend proxy
 [2026-02-19T15:17:10Z] Verified frontend proxy E2E via :3000 (POST/GET mappings + live-values)
+[2026-02-19T15:19:40Z] Cleaned temporary proxy test mapping and re-verified frontend API proxy on :3000
