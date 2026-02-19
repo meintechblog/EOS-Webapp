@@ -6,11 +6,13 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
+from app.api.eos_fields import router as eos_fields_router
 from app.api.live_values import router as live_values_router
 from app.api.mappings import router as mappings_router
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.db.session import SessionLocal, check_db_connection, get_db
+from app.services.eos_catalog import EosFieldCatalogService
 from app.services.mqtt_ingest import MqttIngestService
 
 PROGRESS_FILE = Path("/data/progress.log")
@@ -29,8 +31,10 @@ async def lifespan(app: FastAPI):
     configure_logging()
     settings = get_settings()
     mqtt_service = MqttIngestService(settings=settings, session_factory=SessionLocal)
+    eos_catalog_service = EosFieldCatalogService(settings=settings)
     app.state.settings = settings
     app.state.mqtt_service = mqtt_service
+    app.state.eos_catalog_service = eos_catalog_service
     mqtt_service.start()
     mqtt_service.sync_subscriptions_from_db()
     try:
@@ -40,6 +44,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="EOS-Webapp Backend", lifespan=lifespan)
+app.include_router(eos_fields_router)
 app.include_router(mappings_router)
 app.include_router(live_values_router)
 

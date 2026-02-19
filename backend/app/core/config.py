@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     mqtt_client_id: str = Field(default="eos-webapp-backend")
     mqtt_qos: int = Field(default=0, ge=0, le=2)
     live_stale_seconds: int = Field(default=120, ge=1)
+    eos_base_url: str = Field(default="http://eos:8503")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -24,4 +25,3 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
-

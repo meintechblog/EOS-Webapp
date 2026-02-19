@@ -46,6 +46,7 @@ services:
       MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-eos-webapp-backend}
       MQTT_QOS: ${MQTT_QOS:-0}
       LIVE_STALE_SECONDS: ${LIVE_STALE_SECONDS:-120}
+      EOS_BASE_URL: ${EOS_BASE_URL:-http://eos:8503}
     volumes:
       - ../runtime:/data
     depends_on:
