@@ -53,12 +53,12 @@ services:
       - eos
 
   frontend:
-    image: hashicorp/http-echo:1.0
+    build:
+      context: ../frontend
     container_name: eos-webapp-frontend
     restart: unless-stopped
-    command: ["-text=EOS-Webapp frontend scaffold running"]
     ports:
-      - "3000:5678"
+      - "3000:80"
     depends_on:
       - backend
 
