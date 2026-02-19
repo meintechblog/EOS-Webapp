@@ -9,6 +9,14 @@ export type Mapping = {
   updated_at: string;
 };
 
+export type EosFieldOption = {
+  eos_field: string;
+  label: string;
+  description: string | null;
+  suggested_units: string[];
+  sources: string[];
+};
+
 export type MappingCreatePayload = {
   eos_field: string;
   mqtt_topic: string;
@@ -35,4 +43,3 @@ export type LiveValue = {
   last_seen_seconds: number | null;
   status: "healthy" | "stale" | "never";
 };
-

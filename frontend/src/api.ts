@@ -1,4 +1,5 @@
 import type {
+  EosFieldOption,
   LiveValue,
   Mapping,
   MappingCreatePayload,
@@ -29,6 +30,10 @@ export function getMappings(): Promise<Mapping[]> {
   return apiRequest<Mapping[]>("/api/mappings");
 }
 
+export function getEosFields(): Promise<EosFieldOption[]> {
+  return apiRequest<EosFieldOption[]>("/api/eos-fields");
+}
+
 export function createMapping(payload: MappingCreatePayload): Promise<Mapping> {
   return apiRequest<Mapping>("/api/mappings", {
     method: "POST",
@@ -49,4 +54,3 @@ export function updateMapping(
 export function getLiveValues(): Promise<LiveValue[]> {
   return apiRequest<LiveValue[]>("/api/live-values");
 }
-
