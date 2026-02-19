@@ -31,45 +31,57 @@ def status():
     }
 
 
-@app.get("/status/live", response_class=HTMLResponse)
-def status_live():
-    return """
+def _live_html() -> str:
+    progress = "\n".join(_tail(PROGRESS_FILE, 40)) or "No progress entries yet"
+    worklog = "\n".join(_tail(WORKLOG_FILE, 40)) or "No worklog entries yet"
+    ts = datetime.now(timezone.utc).isoformat()
+    return f"""
 <!doctype html>
 <html>
 <head>
   <meta charset='utf-8'/>
   <title>EOS-Webapp Live Status</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 20px; background: #111; color: #eee; }
-    h1 { margin-bottom: 8px; }
-    .muted { color: #aaa; }
-    .card { border: 1px solid #333; border-radius: 8px; padding: 12px; margin-top: 12px; background: #181818; }
-    pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.4; }
+    body {{ font-family: system-ui, sans-serif; margin: 20px; background: #111; color: #eee; }}
+    h1 {{ margin-bottom: 8px; }}
+    .muted {{ color: #aaa; }}
+    .card {{ border: 1px solid #333; border-radius: 8px; padding: 12px; margin-top: 12px; background: #181818; }}
+    pre {{ white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.4; }}
   </style>
 </head>
 <body>
   <h1>EOS-Webapp / Live Status</h1>
   <div class='muted'>Auto-refresh every 5s</div>
-  <div class='card'><b>Timestamp:</b> <span id='ts'>...</span></div>
+  <div class='card'><b>Timestamp:</b> <span id='ts'>{ts}</span></div>
   <div class='card'>
     <h3>Progress Log (live)</h3>
-    <pre id='progress'></pre>
+    <pre id='progress'>{progress}</pre>
   </div>
   <div class='card'>
     <h3>Worklog</h3>
-    <pre id='worklog'></pre>
+    <pre id='worklog'>{worklog}</pre>
   </div>
   <script>
-    async function load() {
+    async function load() {{
       const res = await fetch('/status');
       const data = await res.json();
       document.getElementById('ts').textContent = data.timestamp;
-      document.getElementById('progress').textContent = (data.progress_tail || []).join('\n') || 'No progress entries yet';
-      document.getElementById('worklog').textContent = (data.worklog_tail || []).join('\n') || 'No worklog entries yet';
-    }
+      document.getElementById('progress').textContent = (data.progress_tail || []).join('\\n') || 'No progress entries yet';
+      document.getElementById('worklog').textContent = (data.worklog_tail || []).join('\\n') || 'No worklog entries yet';
+    }}
     load();
     setInterval(load, 5000);
   </script>
 </body>
 </html>
     """
+
+
+@app.get("/status/live", response_class=HTMLResponse)
+def status_live():
+    return _live_html()
+
+
+@app.get("/stats/live", response_class=HTMLResponse)
+def stats_live_alias():
+    return _live_html()
