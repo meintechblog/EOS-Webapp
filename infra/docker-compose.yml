@@ -35,12 +35,14 @@ services:
       - pg_data:/var/lib/postgresql/data
 
   backend:
-    image: hashicorp/http-echo:1.0
+    build:
+      context: ../backend
     container_name: eos-webapp-backend
     restart: unless-stopped
-    command: ["-text=EOS-Webapp backend scaffold running"]
     ports:
-      - "8080:5678"
+      - "8080:8080"
+    volumes:
+      - ../runtime:/data
     depends_on:
       - postgres
       - eos
