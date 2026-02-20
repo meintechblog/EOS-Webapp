@@ -226,10 +226,67 @@ function prettyJson(value: unknown): string {
     return "-";
   }
   try {
-    return JSON.stringify(value, null, 2);
+    return JSON.stringify(convertJsonToUiUnits(value), null, 2);
   } catch {
     return String(value);
   }
+}
+
+function convertJsonToUiUnits(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => convertJsonToUiUnits(item));
+  }
+  if (value !== null && typeof value === "object") {
+    const source = value as Record<string, unknown>;
+    const converted: Record<string, unknown> = {};
+    for (const [rawKey, rawChild] of Object.entries(source)) {
+      const { key, factor } = remapJsonUnitKey(rawKey);
+      const child = convertJsonToUiUnits(rawChild);
+      converted[key] = factor === 1 ? child : scaleJsonNumericValue(child, factor);
+    }
+    return converted;
+  }
+  return value;
+}
+
+function remapJsonUnitKey(rawKey: string): { key: string; factor: number } {
+  const lower = rawKey.toLowerCase();
+
+  if (lower.includes("euro_pro_wh")) {
+    return { key: rawKey.replace(/euro_pro_wh/gi, "ct_pro_kwh"), factor: 100000 };
+  }
+  if (lower.includes("eur_per_kwh")) {
+    return { key: rawKey.replace(/eur_per_kwh/gi, "ct_per_kwh"), factor: 100 };
+  }
+  if (lower.includes("price") && lower.endsWith("_wh")) {
+    return { key: rawKey.replace(/_wh$/i, "_ct_per_kwh"), factor: 100000 };
+  }
+  if (lower.includes("price") && lower.endsWith("_kwh")) {
+    return { key: rawKey.replace(/_kwh$/i, "_ct_per_kwh"), factor: 100 };
+  }
+  if (lower.endsWith("_wh")) {
+    return { key: rawKey.replace(/_wh$/i, "_kwh"), factor: 0.001 };
+  }
+  if (lower.endsWith("_w")) {
+    return { key: rawKey.replace(/_w$/i, "_kw"), factor: 0.001 };
+  }
+  return { key: rawKey, factor: 1 };
+}
+
+function scaleJsonNumericValue(value: unknown, factor: number): unknown {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return roundForDisplay(value * factor);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      typeof item === "number" && Number.isFinite(item) ? roundForDisplay(item * factor) : item,
+    );
+  }
+  return value;
+}
+
+function roundForDisplay(value: number): number {
+  return Number(value.toFixed(6));
 }
 
 function fieldStatusLabel(field: SetupField, draft: DraftState | undefined): string {
@@ -1200,9 +1257,6 @@ function FieldList({ fields, drafts, onChange, onBlur }: FieldListProps) {
             <div className="field-head">
               <div>
                 <strong>{field.label}</strong>
-                <div className="meta-text">
-                  <code>{field.field_id}</code>
-                </div>
               </div>
               <div className="chip-row">
                 <span className={`chip ${field.required ? "chip-danger" : "chip-neutral"}`}>
@@ -1281,6 +1335,7 @@ function FieldInput({ field, value, onChange, onBlur }: FieldInputProps) {
     return (
       <input
         type="number"
+        step="any"
         value={value}
         onChange={(event) => onChange(field, event.target.value)}
         onBlur={() => onBlur(field.field_id)}

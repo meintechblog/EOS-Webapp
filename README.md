@@ -13,6 +13,27 @@ The app runs in **HTTP-only setup + HTTP output dispatch mode**.
 - Output dispatch uses **HTTP webhooks** (scheduled + heartbeat + force)
 - MQTT dispatch path stays disabled in active runtime path
 
+## UI Unit Contract (mandatory)
+
+Operator-facing units are fixed:
+
+- Prices: `ct/kWh`
+- Capacity: `kWh`
+- Power: `kW`
+
+Internal storage may still use EOS-compatible units (`EUR/kWh`, `Wh`, `W`) but conversion is transparent in UI/API setup flows.
+
+Details:
+
+- `docs/ui-unit-policy.md`
+- `AGENTS.md`
+
+Consistency check:
+
+```bash
+./scripts/check-ui-unit-policy.sh
+```
+
 ## Dependencies
 
 Backend Python dependencies are in `backend/requirements.txt` (including `pandas==2.2.3`).
@@ -79,6 +100,8 @@ Parameter update:
 ```bash
 curl -s "http://192.168.3.157:8080/eos/set/param/general/latitude=49.1128" | jq
 curl -s "http://192.168.3.157:8080/eos/set/param/devices/batteries/lfp/max_soc_percentage?value=95" | jq
+curl -s "http://192.168.3.157:8080/eos/set/param/devices/batteries/lfp/capacity_kwh=90" | jq
+curl -s "http://192.168.3.157:8080/eos/set/param/elecprice/charges_ct_per_kwh=3.5" | jq
 ```
 
 Accepted timestamp params: `ts` or `timestamp` (ISO8601 or unix s/ms).

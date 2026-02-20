@@ -89,6 +89,9 @@ main() {
   log "checking /api/eos/runtime"
   curl -fsS "http://127.0.0.1:8080/api/eos/runtime" | jq '{health_ok, collector: .collector.running}'
 
+  log "checking UI unit policy"
+  "$ROOT_DIR/scripts/check-ui-unit-policy.sh" "http://127.0.0.1:8080"
+
   log "done"
 }
 

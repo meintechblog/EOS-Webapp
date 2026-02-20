@@ -349,14 +349,16 @@ def get_run_plausibility(
         grid_consumption_wh = _coerce_float(payload.get("grid_consumption_energy_wh"))
         grid_feedin_wh = _coerce_float(payload.get("grid_feedin_energy_wh"))
         costs_amt = _coerce_float(payload.get("costs_amt"))
+        grid_consumption_kwh = (grid_consumption_wh / 1000.0) if grid_consumption_wh is not None else None
+        grid_feedin_kwh = (grid_feedin_wh / 1000.0) if grid_feedin_wh is not None else None
 
         if grid_consumption_wh is not None and grid_consumption_wh < 0:
             findings.append(
                 EosRunPlausibilityFinding(
                     level="error",
                     code="negative_grid_consumption",
-                    message="`grid_consumption_energy_wh` ist negativ.",
-                    details={"value": grid_consumption_wh},
+                    message="Netzbezug (kWh) ist negativ.",
+                    details={"grid_consumption_energy_kwh": grid_consumption_kwh},
                 )
             )
         if grid_feedin_wh is not None and grid_feedin_wh < 0:
@@ -364,8 +366,8 @@ def get_run_plausibility(
                 EosRunPlausibilityFinding(
                     level="error",
                     code="negative_grid_feedin",
-                    message="`grid_feedin_energy_wh` ist negativ.",
-                    details={"value": grid_feedin_wh},
+                    message="Netzeinspeisung (kWh) ist negativ.",
+                    details={"grid_feedin_energy_kwh": grid_feedin_kwh},
                 )
             )
         if costs_amt is not None and costs_amt > 1000:
@@ -385,8 +387,8 @@ def get_run_plausibility(
                     message="Kosten/Netzbezug sind vorhanden und auswertbar.",
                     details={
                         "costs_amt": costs_amt,
-                        "grid_consumption_energy_wh": grid_consumption_wh,
-                        "grid_feedin_energy_wh": grid_feedin_wh,
+                        "grid_consumption_energy_kwh": grid_consumption_kwh,
+                        "grid_feedin_energy_kwh": grid_feedin_kwh,
                     },
                 )
             )
