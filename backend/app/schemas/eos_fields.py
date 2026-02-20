@@ -6,5 +6,5 @@ class EosFieldOption(BaseModel):
     label: str
     description: str | None = None
     suggested_units: list[str] = Field(default_factory=list)
+    info_notes: list[str] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
-

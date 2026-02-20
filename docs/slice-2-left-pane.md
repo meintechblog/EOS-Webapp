@@ -1,5 +1,7 @@
 # Slice 2 Runbook: Left Pane UI
 
+Note: this document covers the initial left-pane implementation. For discovery/automap/edit-delete extensions, see `docs/slice-2.5-automap.md`.
+
 Slice 2 introduces the first real frontend with a 3-pane layout and a functional left pane for input mappings and live telemetry.
 
 ## URL
@@ -11,7 +13,9 @@ The frontend container proxies `/api`, `/health`, `/status`, and `/stats/*` to t
 
 ## Implemented in this slice
 
-- Mapping create form (`eos_field`, `mqtt_topic`, `payload_path`, `unit`, `enabled`)
+- Mapping create form with source selection:
+  - MQTT source (`eos_field`, `mqtt_topic`, optional `payload_path`, `unit`, `enabled`)
+  - Fixed source (`eos_field`, `fixed_value`, `unit`, `enabled`)
   - EOS field dropdown from `GET /api/eos-fields` (EOS OpenAPI + measurement keys + fallback fields)
   - unit dropdown with field-aware suggestions
   - custom fallback for both field and unit
@@ -65,3 +69,15 @@ Example:
 - stored `parsed_value`: `987`
 
 If payload is a plain scalar (for example `1234`), keep `payload_path` empty.
+
+## Notes on fixed-value mappings
+
+Use fixed-value mappings for static EOS parameters that should not come from MQTT.
+
+Example:
+
+- `eos_field`: `einspeiseverguetung_euro_pro_wh`
+- `fixed_value`: `0.00012`
+- `mqtt_topic`: not used (`null`)
+
+These mappings are shown in live values as `healthy` and do not require MQTT subscription.

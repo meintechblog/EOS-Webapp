@@ -1,110 +1,125 @@
 # EOS-Webapp
 
-Local-first web application as an interface layer for [Akkudoktor-EOS](https://github.com/Akkudoktor-EOS/EOS).
+Local-first web app as interface for Akkudoktor-EOS.
 
-## Status
+## Current mode (Slice 9)
 
-Sprint 1 slice 1 and slice 2 implemented:
-- MQTT ingest, DB persistence, mapping API, live values API
-- First real 3-pane frontend with functional left pane (mapping form/list/live status)
+The app runs in **HTTP-only setup + HTTP output dispatch mode**.
 
-## Goals (v1)
+- Left pane: `Inputs & Setup` (autosave, mandatory/optional/live, import/export)
+- Middle pane: `Run-Center` (runtime, force run, full run history)
+- Right pane: `Outputs` (active decisions, timeline, dispatch log, output targets, plausibility)
+- Dynamic field updates use **`/eos/set/*`**
+- Output dispatch uses **HTTP webhooks** (scheduled + heartbeat + force)
+- MQTT dispatch path stays disabled in active runtime path
 
-- Single-user
-- Local network deployment
-- No login/auth (initially)
-- MQTT-driven live inputs
-- EOS optimization runs from web UI
-- Persisted history for inputs/runs/results
+## Dependencies
 
-## Planned architecture
+Backend Python dependencies are in `backend/requirements.txt` (including `pandas==2.2.3`).
 
-- `frontend/` — 3-pane web UI (Inputs / Parameters+Run / Outputs)
-- `backend/` — API, MQTT ingest, EOS orchestration
-- `infra/` — docker compose, environment templates
-- `docs/` — setup and runbooks
+Host/tooling dependencies are installed by `scripts/auto-install.sh`:
 
-## Quickstart (local VM)
+- `curl`
+- `jq`
+- `ripgrep`
+- `git`
+- `docker.io`
+- `docker compose` plugin
 
-1. Create env file:
+## Script-first setup
+
+```bash
+cd /opt/eos-webapp
+sudo ./scripts/auto-install.sh
+```
+
+The script:
+
+1. installs host dependencies,
+2. builds/starts compose stack,
+3. runs `alembic upgrade head`,
+4. checks `/health`, `/status`, `/api/eos/runtime`.
+
+Open UI:
+
+```text
+http://192.168.3.157:3000
+```
+
+## Quickstart (manual)
 
 ```bash
 cd /opt/eos-webapp
 cp .env.example .env
+docker compose -f infra/docker-compose.yml up -d --build
+docker compose -f infra/docker-compose.yml exec -T backend alembic upgrade head
 ```
 
-2. Start stack:
+## Core setup APIs
 
 ```bash
-docker-compose -f infra/docker-compose.yml up -d --build
+curl -s http://192.168.3.157:8080/api/setup/fields | jq
+curl -s -X PATCH http://192.168.3.157:8080/api/setup/fields \
+  -H "Content-Type: application/json" \
+  -d '{"updates":[{"field_id":"param.general.latitude","value":49.1128,"source":"ui"}]}' | jq
+curl -s http://192.168.3.157:8080/api/setup/readiness | jq
+curl -s http://192.168.3.157:8080/api/setup/export | jq
 ```
 
-3. Apply migrations:
+## HTTP setter contract (`/eos/set`)
+
+Live signal:
 
 ```bash
-docker-compose -f infra/docker-compose.yml exec backend alembic upgrade head
+curl -s "http://192.168.3.157:8080/eos/set/signal/pv_power_kw=2.0" | jq
 ```
 
-4. Validate backend:
+Parameter update:
+
+```bash
+curl -s "http://192.168.3.157:8080/eos/set/param/general/latitude=49.1128" | jq
+curl -s "http://192.168.3.157:8080/eos/set/param/devices/batteries/lfp/max_soc_percentage?value=95" | jq
+```
+
+Accepted timestamp params: `ts` or `timestamp` (ISO8601 or unix s/ms).
+
+## Run / output APIs
+
+```bash
+curl -s http://192.168.3.157:8080/api/eos/runtime | jq
+curl -s -X POST http://192.168.3.157:8080/api/eos/runs/force | jq
+curl -s http://192.168.3.157:8080/api/eos/runs | jq
+curl -s http://192.168.3.157:8080/api/eos/runs/103/plan | jq
+curl -s http://192.168.3.157:8080/api/eos/runs/103/solution | jq
+curl -s http://192.168.3.157:8080/api/eos/runs/103/plausibility | jq
+curl -s http://192.168.3.157:8080/api/eos/outputs/current | jq
+curl -s http://192.168.3.157:8080/api/eos/outputs/timeline | jq
+curl -s http://192.168.3.157:8080/api/eos/outputs/events | jq
+curl -s -X POST http://192.168.3.157:8080/api/eos/outputs/dispatch/force \
+  -H "Content-Type: application/json" -d '{"resource_ids":null}' | jq
+```
+
+## Output target management
+
+```bash
+curl -s http://192.168.3.157:8080/api/eos/output-targets | jq
+curl -s -X POST http://192.168.3.157:8080/api/eos/output-targets \
+  -H "Content-Type: application/json" \
+  -d '{
+    "resource_id":"lfp",
+    "webhook_url":"http://192.168.3.20:9000/eos/dispatch",
+    "method":"POST",
+    "enabled":true,
+    "timeout_seconds":10,
+    "retry_max":2,
+    "headers_json":{},
+    "payload_template_json":null
+  }' | jq
+```
+
+## Status endpoints
 
 ```bash
 curl -s http://192.168.3.157:8080/health
 curl -s http://192.168.3.157:8080/status | jq
 ```
-
-5. Open frontend UI:
-
-```bash
-xdg-open http://192.168.3.157:3000
-```
-
-If `xdg-open` is not available, open the URL manually in your browser.
-
-## Slice 1 API test flow
-
-1. Create mapping:
-
-```bash
-curl -s -X POST http://192.168.3.157:8080/api/mappings \
-  -H "Content-Type: application/json" \
-  -d '{
-    "eos_field":"pv_power_w",
-    "mqtt_topic":"eos/input/pv_power_w",
-    "unit":"W",
-    "enabled":true
-  }' | jq
-```
-
-2. Publish test message:
-
-```bash
-mosquitto_pub -h 192.168.3.8 -t eos/input/pv_power_w -m '1234'
-```
-
-3. Read live values:
-
-```bash
-curl -s http://192.168.3.157:8080/api/live-values | jq
-```
-
-4. Check status page:
-
-```bash
-curl -s http://192.168.3.157:8080/status | jq
-```
-
-Then open `http://192.168.3.157:8080/status/live` in your browser.
-
-## Slice 2 UI flow (left pane)
-
-1. Open `http://192.168.3.157:3000`
-2. Create mappings in the `Inputs` pane (EOS field dropdown from `GET /api/eos-fields`, field-aware unit suggestion, optional `payload_path` for JSON extraction).
-3. Publish MQTT test messages
-4. Watch live values/status (`healthy | stale | never`) in mapping cards
-5. Enable/disable mapping directly from the list
-
-## Notes
-
-- Initial repository starts private; target is public release once stable and documented.
-- For detailed slice runbook and examples see `docs/slice-1-mqtt-db-api.md`.
-- For UI slice details see `docs/slice-2-left-pane.md`.

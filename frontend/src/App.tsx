@@ -1,462 +1,1299 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  createMapping,
-  getEosFields,
-  getLiveValues,
-  getMappings,
-  updateMapping,
+  createOutputTarget,
+  forceEosOutputDispatch,
+  forceEosRun,
+  getEosOutputEvents,
+  getEosOutputsCurrent,
+  getEosOutputsTimeline,
+  getEosRunPlausibility,
+  getEosRunDetail,
+  getEosRunPlan,
+  getEosRuns,
+  getEosRunSolution,
+  getEosRuntime,
+  getOutputTargets,
+  getSetupExport,
+  getSetupFields,
+  getSetupReadiness,
+  getStatus,
+  patchSetupFields,
+  postSetupImport,
+  refreshEosPredictions,
+  updateOutputTarget,
 } from "./api";
-import type { EosFieldOption, LiveValue, Mapping } from "./types";
+import type {
+  EosPredictionRefreshScope,
+  EosOutputCurrentItem,
+  EosOutputTimelineItem,
+  EosRunPlausibility,
+  EosRunPlan,
+  EosRunDetail,
+  EosRunSolution,
+  EosRunSummary,
+  EosRuntime,
+  OutputDispatchEvent,
+  OutputTarget,
+  SetupField,
+  SetupReadiness,
+  StatusResponse,
+} from "./types";
 
-type MappingFormState = {
-  eosField: string;
-  mqttTopic: string;
-  payloadPath: string;
-  unit: string;
-  enabled: boolean;
+type DraftState = {
+  value: string;
+  dirty: boolean;
+  saving: boolean;
+  error: string | null;
 };
 
-const POLL_INTERVAL_MS = 5000;
-const CUSTOM_FIELD_VALUE = "__custom_field__";
-const CUSTOM_UNIT_VALUE = "__custom_unit__";
-const DEFAULT_UNIT_OPTIONS = ["W", "kW", "Wh", "kWh", "%", "C", "EUR/Wh", "ct/kWh"];
+const AUTOSAVE_MS = 1500;
 
-const INITIAL_FORM: MappingFormState = {
-  eosField: "",
-  mqttTopic: "",
-  payloadPath: "",
-  unit: "",
-  enabled: true,
+function toInputString(field: SetupField): string {
+  const value = field.current_value;
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).join(", ");
+  }
+  return String(value);
+}
+
+function toSubmitValue(field: SetupField, raw: string): unknown {
+  if (field.value_type === "string_list") {
+    return raw
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => item !== "");
+  }
+  return raw;
+}
+
+function formatTimestamp(value: string | null): string {
+  if (!value) {
+    return "-";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
+}
+
+function formatDuration(startedAt: string | null, finishedAt: string | null): string {
+  if (!startedAt) {
+    return "-";
+  }
+  const start = new Date(startedAt);
+  if (Number.isNaN(start.getTime())) {
+    return "-";
+  }
+  const end = finishedAt ? new Date(finishedAt) : new Date();
+  if (Number.isNaN(end.getTime())) {
+    return "-";
+  }
+  const seconds = Math.max(0, Math.round((end.getTime() - start.getTime()) / 1000));
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const restSeconds = seconds % 60;
+  if (minutes < 60) {
+    return `${minutes}m ${restSeconds}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return `${hours}h ${restMinutes}m`;
+}
+
+function runStatusChipClass(statusValue: string): string {
+  const status = statusValue.toLowerCase();
+  if (status === "success" || status === "ok") {
+    return "chip-ok";
+  }
+  if (status === "running") {
+    return "chip-warning";
+  }
+  if (status === "partial") {
+    return "chip-warning";
+  }
+  return "chip-danger";
+}
+
+function dispatchStatusChipClass(statusValue: string): string {
+  const status = statusValue.toLowerCase();
+  if (status === "sent") {
+    return "chip-ok";
+  }
+  if (status === "blocked" || status === "retrying" || status === "skipped_no_target") {
+    return "chip-warning";
+  }
+  return "chip-danger";
+}
+
+function runSourceLabel(triggerSource: string): string {
+  if (triggerSource === "force_run") {
+    return "Force";
+  }
+  if (triggerSource === "automatic") {
+    return "Auto";
+  }
+  if (triggerSource === "prediction_refresh") {
+    return "Prediction";
+  }
+  return triggerSource;
+}
+
+function buildRunHints(run: EosRunDetail | null, plan: EosRunPlan | null, solution: EosRunSolution | null): string[] {
+  if (!run) {
+    return [];
+  }
+
+  const hints: string[] = [];
+  const errorText = (run.error_text ?? "").toLowerCase();
+  const hasPlan = plan?.payload_json !== null && plan?.payload_json !== undefined;
+  const hasSolution = solution?.payload_json !== null && solution?.payload_json !== undefined;
+
+  if (run.trigger_source === "automatic") {
+    hints.push("Automatische Runs werden erkannt, wenn EOS `energy-management.last_run_datetime` verändert.");
+  } else if (run.trigger_source === "force_run") {
+    hints.push("Force-Run setzt das EMS-Intervall kurzzeitig auf 1s (`pulse_then_legacy`) und wartet auf einen neuen EOS-Lauf.");
+  } else if (run.trigger_source === "prediction_refresh") {
+    hints.push("Prediction-Refresh aktualisiert nur Vorhersagedaten (PV/Preis/Load) und erzeugt absichtlich keinen Plan/Solution.");
+  }
+
+  if (run.status === "partial" && !hasPlan && run.trigger_source !== "prediction_refresh") {
+    hints.push("Für diesen Run wurde kein Plan geliefert. Prüfe, ob EOS in `OPTIMIZATION` läuft und ob Vorhersagen vollständig sind.");
+  }
+  if (run.status === "partial" && !hasSolution && run.trigger_source !== "prediction_refresh") {
+    hints.push("Für diesen Run wurde keine Solution geliefert.");
+  }
+
+  if (errorText.includes("did you configure automatic optimization")) {
+    hints.push("EOS meldet fehlende automatische Optimierung. `ems.mode=OPTIMIZATION` und gültige Prediction-Daten prüfen.");
+  }
+  if (errorText.includes("unsupported fill method: linear")) {
+    hints.push("EOS konnte einen Prediction-Key nicht numerisch interpolieren (`Unsupported fill method: linear`). Bei PVForecastImport müssen `pvforecast_ac_power` und `pvforecast_dc_power` numerische Arrays sein.");
+  }
+  if (errorText.includes("provider pvforecastakkudoktor fails on update")) {
+    hints.push("PVForecastAkkudoktor konnte nicht aktualisieren. Prüfe Plane-Parameter (insb. `surface_tilt > 0`) oder nutze PVForecastImport.");
+  }
+  if (errorText.includes("legacy optimize fallback failed")) {
+    hints.push("Fallback wurde versucht, konnte aber nicht abgeschlossen werden. Siehe `Fehlertext` unten.");
+  }
+
+  return hints;
+}
+
+type RunPipelineStep = {
+  label: string;
+  ok: boolean;
 };
 
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message.length > 0) {
-    return error.message;
+function buildRunPipelineSteps(
+  run: EosRunDetail | null,
+  plan: EosRunPlan | null,
+  solution: EosRunSolution | null,
+): RunPipelineStep[] {
+  if (!run) {
+    return [];
   }
-  return "Unknown error";
+  const summary = run.artifact_summary ?? {};
+  const hasPlan = Boolean(plan?.payload_json) || Number(summary.plan ?? 0) > 0;
+  const hasSolution = Boolean(solution?.payload_json) || Number(summary.solution ?? 0) > 0;
+
+  if (run.trigger_source === "prediction_refresh") {
+    return [
+      { label: "1) Prediction-Refresh ausgelöst", ok: Number(summary.prediction_refresh ?? 0) > 0 },
+      { label: "2) Prediction Keys gelesen", ok: Number(summary.prediction_keys ?? 0) > 0 },
+      { label: "3) Prediction Serien gelesen", ok: Number(summary.prediction_series ?? 0) > 0 },
+      { label: "4) Plan/Solution (nicht Teil dieses Run-Typs)", ok: true },
+    ];
+  }
+
+  return [
+    { label: "1) EOS Health erfasst", ok: Number(summary.health ?? 0) > 0 },
+    { label: "2) Prediction Keys gelesen", ok: Number(summary.prediction_keys ?? 0) > 0 },
+    { label: "3) Prediction Serien gelesen", ok: Number(summary.prediction_series ?? 0) > 0 },
+    { label: "4) Plan erzeugt", ok: hasPlan },
+    { label: "5) Solution erzeugt", ok: hasSolution },
+  ];
 }
 
-function statusLabel(liveValue?: LiveValue): string {
-  if (!liveValue) {
-    return "never";
+function prettyJson(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "-";
   }
-  return liveValue.status;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
-function lastSeenLabel(liveValue?: LiveValue): string {
-  if (!liveValue || liveValue.last_seen_seconds === null) {
-    return "never seen";
+function fieldStatusLabel(field: SetupField, draft: DraftState | undefined): string {
+  if (draft?.dirty) {
+    return "ungespeichert";
   }
-  if (liveValue.last_seen_seconds < 1) {
-    return "just now";
+  if (field.missing) {
+    return "fehlend";
   }
-  return `${liveValue.last_seen_seconds}s ago`;
+  if (!field.valid) {
+    return "ungültig";
+  }
+  return "gespeichert";
 }
 
-function valueLabel(liveValue?: LiveValue): string {
-  if (!liveValue || liveValue.parsed_value === null) {
-    return "n/a";
+function fieldStatusClass(field: SetupField, draft: DraftState | undefined): string {
+  if (draft?.dirty) {
+    return "chip-warning";
   }
-  return liveValue.parsed_value;
-}
-
-function statusClassName(liveValue?: LiveValue): string {
-  const status = statusLabel(liveValue);
-  if (status === "healthy") {
-    return "badge badge-healthy";
+  if (field.missing || !field.valid) {
+    return "chip-danger";
   }
-  if (status === "stale") {
-    return "badge badge-stale";
-  }
-  return "badge badge-never";
+  return "chip-ok";
 }
 
 export default function App() {
-  const [mappings, setMappings] = useState<Mapping[]>([]);
-  const [liveValues, setLiveValues] = useState<LiveValue[]>([]);
-  const [eosFields, setEosFields] = useState<EosFieldOption[]>([]);
-  const [form, setForm] = useState<MappingFormState>(INITIAL_FORM);
-  const [useCustomField, setUseCustomField] = useState(false);
-  const [customField, setCustomField] = useState("");
-  const [useCustomUnit, setUseCustomUnit] = useState(false);
-  const [customUnit, setCustomUnit] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<string | null>(null);
+  const [fields, setFields] = useState<SetupField[]>([]);
+  const [readiness, setReadiness] = useState<SetupReadiness | null>(null);
+  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [runtime, setRuntime] = useState<EosRuntime | null>(null);
+  const [runs, setRuns] = useState<EosRunSummary[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
+  const [selectedRunDetail, setSelectedRunDetail] = useState<EosRunDetail | null>(null);
+  const [plan, setPlan] = useState<EosRunPlan | null>(null);
+  const [solution, setSolution] = useState<EosRunSolution | null>(null);
+  const [outputCurrent, setOutputCurrent] = useState<EosOutputCurrentItem[]>([]);
+  const [outputTimeline, setOutputTimeline] = useState<EosOutputTimelineItem[]>([]);
+  const [outputEvents, setOutputEvents] = useState<OutputDispatchEvent[]>([]);
+  const [outputTargets, setOutputTargets] = useState<OutputTarget[]>([]);
+  const [plausibility, setPlausibility] = useState<EosRunPlausibility | null>(null);
+  const [isForcingDispatch, setIsForcingDispatch] = useState(false);
+  const [dispatchMessage, setDispatchMessage] = useState<string | null>(null);
+  const [targetEditId, setTargetEditId] = useState<number | null>(null);
+  const [targetForm, setTargetForm] = useState({
+    resource_id: "",
+    webhook_url: "",
+    method: "POST",
+    enabled: true,
+    timeout_seconds: "10",
+    retry_max: "2",
+    headers_json: "{}",
+    payload_template_json: "",
+  });
+  const [importText, setImportText] = useState("");
+  const [importFeedback, setImportFeedback] = useState<string | null>(null);
+  const [runtimeMessage, setRuntimeMessage] = useState<string | null>(null);
+  const [globalError, setGlobalError] = useState<string | null>(null);
+  const [isForcingRun, setIsForcingRun] = useState(false);
+  const [isRefreshingPrediction, setIsRefreshingPrediction] = useState<EosPredictionRefreshScope | null>(null);
+  const [runSourceFilter, setRunSourceFilter] = useState<"all" | "automatic" | "force_run" | "prediction_refresh">("all");
+  const [runStatusFilter, setRunStatusFilter] = useState<"all" | "running" | "success" | "partial" | "failed">("all");
 
-  const liveValuesByMappingId = useMemo(() => {
-    const map = new Map<number, LiveValue>();
-    for (const value of liveValues) {
-      map.set(value.mapping_id, value);
-    }
-    return map;
-  }, [liveValues]);
-
-  const selectedFieldOption = useMemo(() => {
-    if (useCustomField || form.eosField.trim() === "") {
-      return undefined;
-    }
-    return eosFields.find((field) => field.eos_field === form.eosField);
-  }, [eosFields, form.eosField, useCustomField]);
-
-  const unitOptions = useMemo(() => {
-    const options =
-      selectedFieldOption && selectedFieldOption.suggested_units.length > 0
-        ? selectedFieldOption.suggested_units
-        : DEFAULT_UNIT_OPTIONS;
-
-    const uniqueOptions = new Set<string>(options);
-    if (!useCustomUnit && form.unit.trim() !== "") {
-      uniqueOptions.add(form.unit.trim());
-    }
-    return Array.from(uniqueOptions);
-  }, [selectedFieldOption, useCustomUnit, form.unit]);
-
-  async function refreshMappings(): Promise<void> {
-    const data = await getMappings();
-    setMappings(data);
-  }
-
-  async function refreshLiveValues(): Promise<void> {
-    const data = await getLiveValues();
-    setLiveValues(data);
-    setLastRefresh(new Date().toISOString());
-  }
-
-  async function refreshAll(): Promise<void> {
-    const [mappingData, liveData, eosFieldData] = await Promise.all([
-      getMappings(),
-      getLiveValues(),
-      getEosFields(),
-    ]);
-    setMappings(mappingData);
-    setLiveValues(liveData);
-    setEosFields(eosFieldData);
-    setLastRefresh(new Date().toISOString());
-  }
+  const [drafts, setDrafts] = useState<Record<string, DraftState>>({});
+  const draftsRef = useRef(drafts);
+  const fieldsRef = useRef(fields);
+  const timersRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
-    let active = true;
+    draftsRef.current = drafts;
+  }, [drafts]);
 
-    async function bootstrap() {
-      try {
-        await refreshAll();
-        if (!active) {
-          return;
-        }
-        setError(null);
-      } catch (bootstrapError) {
-        if (!active) {
-          return;
-        }
-        setError(toErrorMessage(bootstrapError));
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
-      }
-    }
+  useEffect(() => {
+    fieldsRef.current = fields;
+  }, [fields]);
 
-    bootstrap().catch(() => {
-      setLoading(false);
-    });
-
-    const intervalId = setInterval(() => {
-      refreshLiveValues().catch((pollError) => {
-        setError(toErrorMessage(pollError));
-      });
-    }, POLL_INTERVAL_MS);
-
-    return () => {
-      active = false;
-      clearInterval(intervalId);
-    };
+  const loadSetup = useCallback(async () => {
+    const [fieldsData, readinessData, statusData] = await Promise.all([
+      getSetupFields(),
+      getSetupReadiness(),
+      getStatus(),
+    ]);
+    setFields(fieldsData);
+    setReadiness(readinessData);
+    setStatus(statusData);
   }, []);
 
-  async function handleCreateMapping(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSubmitting(true);
-    setError(null);
-
-    const eosField = useCustomField ? customField.trim() : form.eosField.trim();
-    const unit = useCustomUnit ? customUnit.trim() : form.unit.trim();
-
-    if (eosField === "") {
-      setError("EOS field is required.");
-      setSubmitting(false);
+  const loadRunCenter = useCallback(async () => {
+    const [runtimeData, runsData, targetsData] = await Promise.all([
+      getEosRuntime(),
+      getEosRuns(),
+      getOutputTargets(),
+    ]);
+    setRuntime(runtimeData);
+    setRuns(runsData);
+    setOutputTargets(targetsData);
+    if (runsData.length === 0) {
+      setSelectedRunId(null);
+      setSelectedRunDetail(null);
+      setPlan(null);
+      setSolution(null);
+      setOutputCurrent([]);
+      setOutputTimeline([]);
+      setOutputEvents([]);
+      setPlausibility(null);
       return;
     }
-
-    try {
-      await createMapping({
-        eos_field: eosField,
-        mqtt_topic: form.mqttTopic.trim(),
-        payload_path: form.payloadPath.trim() || null,
-        unit: unit || null,
-        enabled: form.enabled,
-      });
-      setForm(INITIAL_FORM);
-      setUseCustomField(false);
-      setCustomField("");
-      setUseCustomUnit(false);
-      setCustomUnit("");
-      await refreshAll();
-    } catch (submitError) {
-      setError(toErrorMessage(submitError));
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleToggleEnabled(mapping: Mapping) {
-    setError(null);
-    try {
-      await updateMapping(mapping.id, { enabled: !mapping.enabled });
-      await refreshMappings();
-      await refreshLiveValues();
-    } catch (toggleError) {
-      setError(toErrorMessage(toggleError));
-    }
-  }
-
-  function handleSelectEosField(value: string) {
-    if (value === CUSTOM_FIELD_VALUE) {
-      setUseCustomField(true);
-      setForm((current) => ({ ...current, eosField: "" }));
-      return;
-    }
-
-    setUseCustomField(false);
-    const option = eosFields.find((field) => field.eos_field === value);
-    setForm((current) => {
-      const nextUnit =
-        !useCustomUnit && current.unit.trim() === "" && option && option.suggested_units.length > 0
-          ? option.suggested_units[0]
-          : current.unit;
-      return { ...current, eosField: value, unit: nextUnit };
+    setSelectedRunId((current) => {
+      if (current === null) {
+        return runsData[0].id;
+      }
+      const exists = runsData.some((run) => run.id === current);
+      return exists ? current : runsData[0].id;
     });
-  }
+  }, []);
 
-  function handleSelectUnit(value: string) {
-    if (value === CUSTOM_UNIT_VALUE) {
-      setUseCustomUnit(true);
-      setCustomUnit(form.unit);
+  const loadRunDetails = useCallback(async (runId: number) => {
+    const [detailData, planData, solutionData, currentData, timelineData, eventsData, plausibilityData] = await Promise.all([
+      getEosRunDetail(runId),
+      getEosRunPlan(runId),
+      getEosRunSolution(runId),
+      getEosOutputsCurrent(runId),
+      getEosOutputsTimeline({ runId }),
+      getEosOutputEvents({ runId, limit: 200 }),
+      getEosRunPlausibility(runId),
+    ]);
+    setSelectedRunDetail(detailData);
+    setPlan(planData);
+    setSolution(solutionData);
+    setOutputCurrent(currentData);
+    setOutputTimeline(timelineData);
+    setOutputEvents(eventsData);
+    setPlausibility(plausibilityData);
+  }, []);
+
+  const refreshAll = useCallback(async () => {
+    try {
+      await Promise.all([loadSetup(), loadRunCenter()]);
+      setGlobalError(null);
+    } catch (error) {
+      setGlobalError(error instanceof Error ? error.message : String(error));
+    }
+  }, [loadRunCenter, loadSetup]);
+
+  useEffect(() => {
+    void refreshAll();
+    const interval = window.setInterval(() => {
+      void refreshAll();
+    }, 15000);
+    return () => {
+      window.clearInterval(interval);
+      for (const timer of Object.values(timersRef.current)) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [refreshAll]);
+
+  useEffect(() => {
+    if (selectedRunId === null) {
+      return;
+    }
+    void loadRunDetails(selectedRunId).catch((error: unknown) => {
+      setGlobalError(error instanceof Error ? error.message : String(error));
+    });
+  }, [selectedRunId, loadRunDetails]);
+
+  const saveField = useCallback(async (fieldId: string) => {
+    const field = fieldsRef.current.find((item) => item.field_id === fieldId);
+    const draft = draftsRef.current[fieldId];
+    if (!field || !draft || !draft.dirty) {
       return;
     }
 
-    setUseCustomUnit(false);
-    setCustomUnit("");
-    setForm((current) => ({ ...current, unit: value }));
-  }
+    setDrafts((current) => ({
+      ...current,
+      [fieldId]: {
+        ...current[fieldId],
+        saving: true,
+      },
+    }));
+
+    try {
+      const payloadValue = toSubmitValue(field, draft.value);
+      const response = await patchSetupFields([
+        {
+          field_id: fieldId,
+          value: payloadValue,
+          source: "ui",
+        },
+      ]);
+      const result = response.results[0];
+      if (!result) {
+        throw new Error("No result from backend");
+      }
+
+      setFields((current) => current.map((item) => (item.field_id === fieldId ? result.field : item)));
+      setDrafts((current) => ({
+        ...current,
+        [fieldId]: {
+          value: toInputString(result.field),
+          dirty: result.status !== "saved",
+          saving: false,
+          error: result.error,
+        },
+      }));
+
+      const readinessData = await getSetupReadiness();
+      setReadiness(readinessData);
+      setGlobalError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setDrafts((current) => ({
+        ...current,
+        [fieldId]: {
+          ...(current[fieldId] ?? { value: "" }),
+          dirty: true,
+          saving: false,
+          error: message,
+        },
+      }));
+      setGlobalError(message);
+    }
+  }, []);
+
+  const scheduleSave = useCallback(
+    (fieldId: string) => {
+      const existing = timersRef.current[fieldId];
+      if (existing) {
+        window.clearTimeout(existing);
+      }
+      timersRef.current[fieldId] = window.setTimeout(() => {
+        void saveField(fieldId);
+      }, AUTOSAVE_MS);
+    },
+    [saveField],
+  );
+
+  const flushSave = useCallback(
+    (fieldId: string) => {
+      const existing = timersRef.current[fieldId];
+      if (existing) {
+        window.clearTimeout(existing);
+      }
+      void saveField(fieldId);
+    },
+    [saveField],
+  );
+
+  const handleFieldChange = useCallback(
+    (field: SetupField, nextValue: string) => {
+      setDrafts((current) => ({
+        ...current,
+        [field.field_id]: {
+          value: nextValue,
+          dirty: true,
+          saving: current[field.field_id]?.saving ?? false,
+          error: null,
+        },
+      }));
+      scheduleSave(field.field_id);
+    },
+    [scheduleSave],
+  );
+
+  const exportSetup = useCallback(async () => {
+    try {
+      const pkg = await getSetupExport();
+      const blob = new Blob([JSON.stringify(pkg, null, 2)], { type: "application/json" });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "eos-inputs-setup.v2.json";
+      link.click();
+      window.URL.revokeObjectURL(url);
+      setImportFeedback("Export erstellt.");
+      setGlobalError(null);
+    } catch (error) {
+      setGlobalError(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  const applyImport = useCallback(async () => {
+    try {
+      const parsed = JSON.parse(importText) as Record<string, unknown>;
+      const result = await postSetupImport(parsed);
+      setImportFeedback(
+        result.warnings.length > 0
+          ? `${result.message} | Warnungen: ${result.warnings.join(" | ")}`
+          : result.message,
+      );
+      await refreshAll();
+      setGlobalError(null);
+    } catch (error) {
+      setGlobalError(error instanceof Error ? error.message : String(error));
+    }
+  }, [importText, refreshAll]);
+
+  const triggerForceRun = useCallback(async () => {
+    setIsForcingRun(true);
+    try {
+      const response = await forceEosRun();
+      setRuntimeMessage(`Force-Run gestartet (run_id=${response.run_id}).`);
+      await loadRunCenter();
+      setGlobalError(null);
+    } catch (error) {
+      setGlobalError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsForcingRun(false);
+    }
+  }, [loadRunCenter]);
+
+  const triggerPredictionRefresh = useCallback(
+    async (scope: EosPredictionRefreshScope) => {
+      setIsRefreshingPrediction(scope);
+      try {
+        const response = await refreshEosPredictions(scope);
+        setRuntimeMessage(
+          `Prediction-Refresh (${scope}) gestartet (run_id=${response.run_id}). Nach Abschluss kann ein Force-Run gestartet werden.`,
+        );
+        await loadRunCenter();
+        setGlobalError(null);
+      } catch (error) {
+        setGlobalError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setIsRefreshingPrediction(null);
+      }
+    },
+    [loadRunCenter],
+  );
+
+  const triggerForceDispatch = useCallback(async () => {
+    setIsForcingDispatch(true);
+    try {
+      const response = await forceEosOutputDispatch();
+      setDispatchMessage(response.message);
+      if (selectedRunId !== null) {
+        await loadRunDetails(selectedRunId);
+      } else {
+        await loadRunCenter();
+      }
+      setGlobalError(null);
+    } catch (error) {
+      setGlobalError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsForcingDispatch(false);
+    }
+  }, [loadRunCenter, loadRunDetails, selectedRunId]);
+
+  const submitOutputTarget = useCallback(async () => {
+    try {
+      const timeoutSeconds = Number.parseInt(targetForm.timeout_seconds, 10);
+      const retryMax = Number.parseInt(targetForm.retry_max, 10);
+      const headersJson = targetForm.headers_json.trim() ? JSON.parse(targetForm.headers_json) : {};
+      const payloadTemplateJson = targetForm.payload_template_json.trim()
+        ? JSON.parse(targetForm.payload_template_json)
+        : null;
+
+      const payload = {
+        resource_id: targetForm.resource_id.trim(),
+        webhook_url: targetForm.webhook_url.trim(),
+        method: targetForm.method.trim().toUpperCase(),
+        enabled: targetForm.enabled,
+        timeout_seconds: Number.isFinite(timeoutSeconds) ? timeoutSeconds : 10,
+        retry_max: Number.isFinite(retryMax) ? retryMax : 2,
+        headers_json: headersJson,
+        payload_template_json: payloadTemplateJson,
+      };
+
+      if (targetEditId === null) {
+        await createOutputTarget(payload);
+      } else {
+        await updateOutputTarget(targetEditId, payload);
+      }
+
+      setTargetEditId(null);
+      setTargetForm({
+        resource_id: "",
+        webhook_url: "",
+        method: "POST",
+        enabled: true,
+        timeout_seconds: "10",
+        retry_max: "2",
+        headers_json: "{}",
+        payload_template_json: "",
+      });
+      const targets = await getOutputTargets();
+      setOutputTargets(targets);
+      setDispatchMessage("Output Target gespeichert.");
+      setGlobalError(null);
+    } catch (error) {
+      setGlobalError(error instanceof Error ? error.message : String(error));
+    }
+  }, [targetEditId, targetForm]);
+
+  const editOutputTarget = useCallback((target: OutputTarget) => {
+    setTargetEditId(target.id);
+    setTargetForm({
+      resource_id: target.resource_id,
+      webhook_url: target.webhook_url,
+      method: target.method,
+      enabled: target.enabled,
+      timeout_seconds: String(target.timeout_seconds),
+      retry_max: String(target.retry_max),
+      headers_json: JSON.stringify(target.headers_json ?? {}, null, 2),
+      payload_template_json: target.payload_template_json
+        ? JSON.stringify(target.payload_template_json, null, 2)
+        : "",
+    });
+  }, []);
+
+  const toggleOutputTargetEnabled = useCallback(
+    async (target: OutputTarget) => {
+      try {
+        await updateOutputTarget(target.id, { enabled: !target.enabled });
+        const targets = await getOutputTargets();
+        setOutputTargets(targets);
+        if (selectedRunId !== null) {
+          await loadRunDetails(selectedRunId);
+        }
+        setGlobalError(null);
+      } catch (error) {
+        setGlobalError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [loadRunDetails, selectedRunId],
+  );
+
+  const groupedFields = useMemo(() => {
+    const mandatory = fields.filter((field) => field.group === "mandatory");
+    const optional = fields.filter((field) => field.group === "optional");
+    const live = fields.filter((field) => field.group === "live");
+    return { mandatory, optional, live };
+  }, [fields]);
+
+  const runStats = useMemo(() => {
+    const total = runs.length;
+    const automatic = runs.filter((run) => run.trigger_source === "automatic").length;
+    const forced = runs.filter((run) => run.trigger_source === "force_run").length;
+    const prediction = runs.filter((run) => run.trigger_source === "prediction_refresh").length;
+    const running = runs.filter((run) => run.status === "running").length;
+    const success = runs.filter((run) => run.status === "success").length;
+    const partial = runs.filter((run) => run.status === "partial").length;
+    const failed = runs.filter((run) => run.status === "failed").length;
+    return { total, automatic, forced, prediction, running, success, partial, failed };
+  }, [runs]);
+
+  const filteredRuns = useMemo(() => {
+    return runs.filter((run) => {
+      if (runSourceFilter !== "all" && run.trigger_source !== runSourceFilter) {
+        return false;
+      }
+      if (runStatusFilter !== "all" && run.status !== runStatusFilter) {
+        return false;
+      }
+      return true;
+    });
+  }, [runs, runSourceFilter, runStatusFilter]);
+
+  const runHints = useMemo(
+    () => buildRunHints(selectedRunDetail, plan, solution),
+    [selectedRunDetail, plan, solution],
+  );
+  const runPipelineSteps = useMemo(
+    () => buildRunPipelineSteps(selectedRunDetail, plan, solution),
+    [selectedRunDetail, plan, solution],
+  );
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <div>
           <p className="eyebrow">EOS Webapp</p>
-          <h1>Local Control Console</h1>
+          <h1>Inputs & Setup | Run-Center | Outputs</h1>
         </div>
-        <div className="refresh-info">
-          <span className="meta-label">Live refresh:</span>
-          <strong>{POLL_INTERVAL_MS / 1000}s</strong>
-          <span className="meta-label">Last pull:</span>
-          <strong>{lastRefresh ? new Date(lastRefresh).toLocaleTimeString() : "n/a"}</strong>
+        <div className="status-strip">
+          <span className={`chip ${readiness?.readiness_level === "ready" ? "chip-ok" : "chip-danger"}`}>
+            readiness: {readiness?.readiness_level ?? "-"}
+          </span>
+          <span className="chip chip-neutral">blockers: {readiness?.blockers_count ?? "-"}</span>
+          <span className="chip chip-neutral">EOS: {status?.eos?.health_ok ? "ok" : "offline"}</span>
         </div>
       </header>
 
-      {error ? (
-        <div className="error-banner">
-          <span>API error:</span>
-          <strong>{error}</strong>
-        </div>
-      ) : null}
+      {globalError ? <div className="error-banner">{globalError}</div> : null}
 
-      <main className="app-grid">
-        <section className="pane pane-inputs">
-          <h2>Inputs</h2>
+      <div className="app-grid">
+        <section className="pane">
+          <h2>Inputs & Setup</h2>
           <p className="pane-copy">
-            Configure EOS input mappings and watch live MQTT values per field.
+            Pflichtfelder sind rot, bis sie gültig gespeichert sind. Änderungen werden automatisch gespeichert.
           </p>
 
-          <form className="panel form-panel" onSubmit={handleCreateMapping}>
-            <h3>New Mapping</h3>
+          <div className="panel">
+            <h3>Pflichtfelder</h3>
+            <FieldList fields={groupedFields.mandatory} drafts={drafts} onChange={handleFieldChange} onBlur={flushSave} />
+          </div>
 
-            <label>
-              EOS field (from EOS catalog)
-              <select
-                required={!useCustomField}
-                value={useCustomField ? CUSTOM_FIELD_VALUE : form.eosField}
-                onChange={(event) => handleSelectEosField(event.target.value)}
-              >
-                <option value="">Select EOS field...</option>
-                {eosFields.map((field) => (
-                  <option key={field.eos_field} value={field.eos_field}>
-                    {field.label} ({field.eos_field})
-                  </option>
-                ))}
-                <option value={CUSTOM_FIELD_VALUE}>Custom field...</option>
-              </select>
-            </label>
+          <div className="panel">
+            <h3>Optionale Felder</h3>
+            <FieldList fields={groupedFields.optional} drafts={drafts} onChange={handleFieldChange} onBlur={flushSave} />
+          </div>
 
-            {useCustomField ? (
-              <label>
-                Custom EOS field
-                <input
-                  required
-                  value={customField}
-                  onChange={(event) => setCustomField(event.target.value)}
-                  placeholder="pv_power_w"
-                />
-              </label>
-            ) : null}
+          <div className="panel">
+            <h3>Live-Signale</h3>
+            <FieldList fields={groupedFields.live} drafts={drafts} onChange={handleFieldChange} onBlur={flushSave} />
+          </div>
 
-            {!useCustomField && selectedFieldOption ? (
-              <p className="field-hint">
-                {selectedFieldOption.description || "No description from EOS available."}
-                <span className="hint-meta">sources: {selectedFieldOption.sources.join(", ")}</span>
-              </p>
-            ) : null}
-
-            {eosFields.length === 0 ? (
-              <p className="field-hint">EOS catalog is empty. You can still use custom fields.</p>
-            ) : null}
-
-            <label>
-              MQTT topic
-              <input
-                required
-                value={form.mqttTopic}
-                onChange={(event) => setForm((current) => ({ ...current, mqttTopic: event.target.value }))}
-                placeholder="eos/input/pv_power_w"
-              />
-            </label>
-
-            <label>
-              Payload path (optional)
-              <input
-                value={form.payloadPath}
-                onChange={(event) => setForm((current) => ({ ...current, payloadPath: event.target.value }))}
-                placeholder="sensor.power"
-              />
-              <span className="hint-inline">
-                For JSON payloads only. Example: for <code>{'{"sensor":{"power":987}}'}</code> use
-                <code>sensor.power</code>. Leave empty for plain values like <code>1234</code>.
-              </span>
-            </label>
-
-            <label>
-              Unit (optional, field-aware)
-              <select
-                value={useCustomUnit ? CUSTOM_UNIT_VALUE : form.unit}
-                onChange={(event) => handleSelectUnit(event.target.value)}
-              >
-                <option value="">No unit</option>
-                {unitOptions.map((unitOption) => (
-                  <option key={unitOption} value={unitOption}>
-                    {unitOption}
-                  </option>
-                ))}
-                <option value={CUSTOM_UNIT_VALUE}>Custom unit...</option>
-              </select>
-            </label>
-
-            {useCustomUnit ? (
-              <label>
-                Custom unit
-                <input
-                  value={customUnit}
-                  onChange={(event) => setCustomUnit(event.target.value)}
-                  placeholder="W"
-                />
-              </label>
-            ) : null}
-
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={form.enabled}
-                onChange={(event) => setForm((current) => ({ ...current, enabled: event.target.checked }))}
-              />
-              Enabled
-            </label>
-            <button type="submit" disabled={submitting}>
-              {submitting ? "Saving..." : "Create mapping"}
-            </button>
-          </form>
-
-          <div className="panel list-panel">
-            <h3>Configured Mappings</h3>
-            {loading ? <p>Loading mappings...</p> : null}
-            {!loading && mappings.length === 0 ? <p>No mappings configured yet.</p> : null}
-            <ul className="mapping-list">
-              {mappings.map((mapping) => {
-                const live = liveValuesByMappingId.get(mapping.id);
-                return (
-                  <li key={mapping.id} className="mapping-item">
-                    <div className="mapping-head">
-                      <strong>{mapping.eos_field}</strong>
-                      <span className={statusClassName(live)}>{statusLabel(live)}</span>
-                    </div>
-                    <code>{mapping.mqtt_topic}</code>
-                    <div className="mapping-meta">
-                      <span>value: {valueLabel(live)}</span>
-                      <span>last seen: {lastSeenLabel(live)}</span>
-                      <span>
-                        enabled: <strong>{mapping.enabled ? "yes" : "no"}</strong>
-                      </span>
-                    </div>
-                    <div className="mapping-actions">
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => {
-                          void handleToggleEnabled(mapping);
-                        }}
-                      >
-                        {mapping.enabled ? "Disable" : "Enable"}
-                      </button>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+          <div className="panel">
+            <h3>Settings Import / Export (Inputs & Setup)</h3>
+            <div className="actions-row">
+              <button type="button" onClick={exportSetup}>Export</button>
+              <button type="button" className="secondary" onClick={applyImport}>Import anwenden</button>
+            </div>
+            <textarea
+              value={importText}
+              onChange={(event) => setImportText(event.target.value)}
+              rows={7}
+              placeholder='{"format":"eos-webapp.inputs-setup.v2","payload":{...}}'
+            />
+            {importFeedback ? <p className="meta-text">{importFeedback}</p> : null}
           </div>
         </section>
 
-        <section className="pane pane-params">
-          <h2>Parameters + Run</h2>
-          <p className="pane-copy">
-            Slice 2 keeps this area ready for the next step: optimization parameter editor and run trigger.
-          </p>
-          <div className="panel placeholder-card">
-            <h3>Next Implementation</h3>
-            <p>Connect EOS optimization settings to backend orchestration endpoints.</p>
-            <ul>
-              <li>Load preset parameter set from DB</li>
-              <li>Validate user edits before run</li>
-              <li>Trigger /optimize through backend only</li>
+        <section className="pane">
+          <h2>Run-Center</h2>
+          <p className="pane-copy">Runtime, Run-Typen, Historie und Fehleranalyse in Anwendersprache.</p>
+
+          <div className="panel">
+            <h3>Run-Typen</h3>
+            <ul className="plain-list">
+              <li><strong>Auto</strong>: EOS-intern ausgelöster Lauf (erkannt über neues `last_run_datetime`).</li>
+              <li><strong>Prediction</strong>: aktualisiert nur Vorhersagen (PV/Preis/Load), ohne Plan/Solution.</li>
+              <li><strong>Force</strong>: zentraler Optimierungslauf über `pulse_then_legacy`.</li>
+              <li><strong>Status</strong>: `success` (vollständig), `partial` (Teilresultat), `failed` (abgebrochen).</li>
             </ul>
+            <div className="actions-row wrap">
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void triggerPredictionRefresh("pv")}
+                disabled={isRefreshingPrediction !== null || isForcingRun}
+              >
+                {isRefreshingPrediction === "pv" ? "PV refresh..." : "PV Forecast Refresh"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void triggerPredictionRefresh("prices")}
+                disabled={isRefreshingPrediction !== null || isForcingRun}
+              >
+                {isRefreshingPrediction === "prices" ? "Preis refresh..." : "Preis Refresh"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void triggerPredictionRefresh("all")}
+                disabled={isRefreshingPrediction !== null || isForcingRun}
+              >
+                {isRefreshingPrediction === "all" ? "Prediction refresh..." : "Prediction All Refresh"}
+              </button>
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-head">
+              <h3>EOS Runtime</h3>
+              <button
+                type="button"
+                onClick={triggerForceRun}
+                disabled={isForcingRun || isRefreshingPrediction !== null}
+              >
+                {isForcingRun ? "läuft..." : "Force Run"}
+              </button>
+            </div>
+            {runtimeMessage ? <p className="meta-text">{runtimeMessage}</p> : null}
+            <ul className="plain-list">
+              <li>EOS Base URL: <code>{runtime?.eos_base_url ?? "-"}</code></li>
+              <li>Health: <strong>{runtime?.health_ok ? "ok" : "offline"}</strong></li>
+              <li>Collector: <strong>{runtime?.collector.running ? "running" : "stopped"}</strong></li>
+              <li>Letzter EOS-Run: <strong>{formatTimestamp(runtime?.collector.last_observed_eos_run_datetime ?? null)}</strong></li>
+              <li>Last Poll: <strong>{formatTimestamp(runtime?.collector.last_poll_ts ?? null)}</strong></li>
+              <li>Last Sync: <strong>{formatTimestamp(runtime?.collector.last_successful_sync_ts ?? null)}</strong></li>
+              <li>Aligned Scheduler: <strong>{runtime?.collector.aligned_scheduler_enabled ? "aktiv" : "aus"}</strong></li>
+              <li>Aligned Slots: <strong>{runtime?.collector.aligned_scheduler_minutes || "-"}</strong> (+{runtime?.collector.aligned_scheduler_delay_seconds ?? 0}s)</li>
+              <li>Nächster geplanter Slot: <strong>{formatTimestamp(runtime?.collector.aligned_scheduler_next_due_ts ?? null)}</strong></li>
+              <li>Letzter Scheduler-Trigger: <strong>{formatTimestamp(runtime?.collector.aligned_scheduler_last_trigger_ts ?? null)}</strong></li>
+              <li>Letzter Scheduler-Skip: <strong>{runtime?.collector.aligned_scheduler_last_skip_reason ?? "-"}</strong></li>
+            </ul>
+          </div>
+
+          <div className="panel">
+            <h3>Run-Übersicht</h3>
+            <div className="chip-row">
+              <span className="chip chip-neutral">gesamt: {runStats.total}</span>
+              <span className="chip chip-neutral">auto: {runStats.automatic}</span>
+              <span className="chip chip-neutral">force: {runStats.forced}</span>
+              <span className="chip chip-neutral">prediction: {runStats.prediction}</span>
+              <span className={`chip ${runStats.running > 0 ? "chip-warning" : "chip-neutral"}`}>running: {runStats.running}</span>
+              <span className="chip chip-ok">success: {runStats.success}</span>
+              <span className="chip chip-warning">partial: {runStats.partial}</span>
+              <span className="chip chip-danger">failed: {runStats.failed}</span>
+            </div>
+          </div>
+
+          <div className="panel">
+            <h3>Run-Historie</h3>
+            <div className="actions-row">
+              <select
+                value={runSourceFilter}
+                onChange={(event) =>
+                  setRunSourceFilter(
+                    event.target.value as "all" | "automatic" | "force_run" | "prediction_refresh",
+                  )
+                }
+              >
+                <option value="all">Quelle: alle</option>
+                <option value="automatic">Quelle: auto</option>
+                <option value="force_run">Quelle: force</option>
+                <option value="prediction_refresh">Quelle: prediction</option>
+              </select>
+              <select value={runStatusFilter} onChange={(event) => setRunStatusFilter(event.target.value as "all" | "running" | "success" | "partial" | "failed")}>
+                <option value="all">Status: alle</option>
+                <option value="running">running</option>
+                <option value="success">success</option>
+                <option value="partial">partial</option>
+                <option value="failed">failed</option>
+              </select>
+            </div>
+            <div className="run-list">
+              {filteredRuns.length === 0 ? <p>Keine Runs für den aktiven Filter.</p> : null}
+              {filteredRuns.map((run) => (
+                <button
+                  key={run.id}
+                  type="button"
+                  className={`run-item${selectedRunId === run.id ? " run-item-active" : ""}`}
+                  onClick={() => setSelectedRunId(run.id)}
+                >
+                  <span>#{run.id}</span>
+                  <span>{runSourceLabel(run.trigger_source)}</span>
+                  <span className={`chip ${runStatusChipClass(run.status)}`}>{run.status}</span>
+                  <span>{formatTimestamp(run.started_at)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="panel">
+            <h3>Analyse des ausgewählten Runs</h3>
+            {selectedRunDetail === null ? (
+              <p>Kein Run ausgewählt.</p>
+            ) : (
+              <>
+                <ul className="plain-list">
+                  <li>Run ID: <strong>{selectedRunDetail.id}</strong></li>
+                  <li>Quelle: <strong>{runSourceLabel(selectedRunDetail.trigger_source)}</strong></li>
+                  <li>Mode: <strong>{selectedRunDetail.run_mode}</strong></li>
+                  <li>Status: <span className={`chip ${runStatusChipClass(selectedRunDetail.status)}`}>{selectedRunDetail.status}</span></li>
+                  <li>Dauer: <strong>{formatDuration(selectedRunDetail.started_at, selectedRunDetail.finished_at)}</strong></li>
+                  <li>EOS last_run_datetime: <strong>{formatTimestamp(selectedRunDetail.eos_last_run_datetime)}</strong></li>
+                </ul>
+                <div className="meta-text">
+                  Artefakte: <code>{JSON.stringify(selectedRunDetail.artifact_summary)}</code>
+                </div>
+                {runPipelineSteps.length > 0 ? (
+                  <ul className="plain-list">
+                    {runPipelineSteps.map((step) => (
+                      <li key={step.label}>
+                        <span className={`chip ${step.ok ? "chip-ok" : "chip-warning"}`}>
+                          {step.ok ? "ok" : "offen"}
+                        </span>{" "}
+                        {step.label}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {runHints.length > 0 ? (
+                  <ul className="plain-list">
+                    {runHints.map((hint) => (
+                      <li key={hint}>{hint}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                {selectedRunDetail.error_text ? (
+                  <div className="field-error">Fehlertext: {selectedRunDetail.error_text}</div>
+                ) : null}
+              </>
+            )}
           </div>
         </section>
 
-        <section className="pane pane-outputs">
+        <section className="pane">
           <h2>Outputs</h2>
           <p className="pane-copy">
-            Output widgets will consume optimization results and export targets in the next slice.
+            Konkrete Ausführung aus EOS-Plan: aktive Entscheidungen, Zustandswechsel, HTTP-Dispatch und Plausibilitätschecks.
           </p>
-          <div className="panel placeholder-card">
-            <h3>Planned Output Flow</h3>
-            <p>EOS result persistence, result timeline, and forwarding integration points.</p>
-            <ul>
-              <li>Latest run summary</li>
-              <li>Result detail table</li>
-              <li>Export to MQTT and external systems</li>
-            </ul>
+
+          <div className="panel">
+            <div className="panel-head">
+              <h3>Aktive Entscheidungen jetzt</h3>
+              <button type="button" onClick={triggerForceDispatch} disabled={isForcingDispatch}>
+                {isForcingDispatch ? "sende..." : "Force Dispatch"}
+              </button>
+            </div>
+            {dispatchMessage ? <p className="meta-text">{dispatchMessage}</p> : null}
+            {outputCurrent.length === 0 ? (
+              <p>Keine aktive Entscheidung verfügbar.</p>
+            ) : (
+              <div className="data-table">
+                <div className="table-head">
+                  <span>Resource</span>
+                  <span>Mode</span>
+                  <span>Faktor</span>
+                  <span>Effective</span>
+                  <span>Safety</span>
+                </div>
+                {outputCurrent.map((item) => (
+                  <div key={`${item.resource_id}-${item.effective_at ?? "na"}`} className="table-row">
+                    <span>{item.resource_id}</span>
+                    <span>{item.operation_mode_id ?? "-"}</span>
+                    <span>{item.operation_mode_factor ?? "-"}</span>
+                    <span>{formatTimestamp(item.effective_at)}</span>
+                    <span className={`chip ${item.safety_status === "ok" ? "chip-ok" : "chip-warning"}`}>
+                      {item.safety_status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="panel">
+            <h3>Nächste Zustandswechsel</h3>
+            {outputTimeline.length === 0 ? (
+              <p>Keine Timeline-Einträge.</p>
+            ) : (
+              <div className="data-table">
+                <div className="table-head">
+                  <span>Zeit</span>
+                  <span>Resource</span>
+                  <span>Typ</span>
+                  <span>Mode</span>
+                  <span>Faktor</span>
+                </div>
+                {outputTimeline.slice(0, 20).map((item) => (
+                  <div key={`${item.instruction_id}-${item.execution_time ?? "na"}`} className="table-row">
+                    <span>{formatTimestamp(item.execution_time ?? item.starts_at)}</span>
+                    <span>{item.resource_id}</span>
+                    <span>{item.instruction_type}</span>
+                    <span>{item.operation_mode_id ?? "-"}</span>
+                    <span>{item.operation_mode_factor ?? "-"}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="panel">
+            <h3>Dispatch-Log</h3>
+            {outputEvents.length === 0 ? (
+              <p>Noch keine Dispatch-Events.</p>
+            ) : (
+              <div className="data-table">
+                <div className="table-head">
+                  <span>Zeit</span>
+                  <span>Resource</span>
+                  <span>Kind</span>
+                  <span>Status</span>
+                  <span>HTTP</span>
+                </div>
+                {outputEvents.slice(0, 25).map((event) => (
+                  <div key={event.id} className="table-row">
+                    <span>{formatTimestamp(event.created_at)}</span>
+                    <span>{event.resource_id ?? "-"}</span>
+                    <span>{event.dispatch_kind}</span>
+                    <span className={`chip ${dispatchStatusChipClass(event.status)}`}>{event.status}</span>
+                    <span>{event.http_status ?? "-"}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="panel">
+            <h3>Output Targets</h3>
+            <div className="data-table compact">
+              <div className="table-head">
+                <span>Resource</span>
+                <span>Webhook</span>
+                <span>Method</span>
+                <span>Status</span>
+                <span>Aktionen</span>
+              </div>
+              {outputTargets.map((target) => (
+                <div key={target.id} className="table-row">
+                  <span>{target.resource_id}</span>
+                  <span className="truncate">{target.webhook_url}</span>
+                  <span>{target.method}</span>
+                  <span className={`chip ${target.enabled ? "chip-ok" : "chip-warning"}`}>
+                    {target.enabled ? "enabled" : "disabled"}
+                  </span>
+                  <span className="actions-inline">
+                    <button type="button" className="secondary" onClick={() => editOutputTarget(target)}>
+                      Edit
+                    </button>
+                    <button type="button" className="secondary" onClick={() => void toggleOutputTargetEnabled(target)}>
+                      {target.enabled ? "Disable" : "Enable"}
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <div className="target-form-grid">
+              <input
+                value={targetForm.resource_id}
+                onChange={(event) => setTargetForm((current) => ({ ...current, resource_id: event.target.value }))}
+                placeholder="resource_id (z. B. lfp, shaby)"
+              />
+              <input
+                value={targetForm.webhook_url}
+                onChange={(event) => setTargetForm((current) => ({ ...current, webhook_url: event.target.value }))}
+                placeholder="http://target.local/webhook"
+              />
+              <select
+                value={targetForm.method}
+                onChange={(event) => setTargetForm((current) => ({ ...current, method: event.target.value }))}
+              >
+                <option value="POST">POST</option>
+                <option value="PUT">PUT</option>
+                <option value="PATCH">PATCH</option>
+              </select>
+              <label className="checkbox-line">
+                <input
+                  type="checkbox"
+                  checked={targetForm.enabled}
+                  onChange={(event) => setTargetForm((current) => ({ ...current, enabled: event.target.checked }))}
+                />
+                enabled
+              </label>
+              <input
+                value={targetForm.timeout_seconds}
+                onChange={(event) => setTargetForm((current) => ({ ...current, timeout_seconds: event.target.value }))}
+                placeholder="timeout_seconds"
+              />
+              <input
+                value={targetForm.retry_max}
+                onChange={(event) => setTargetForm((current) => ({ ...current, retry_max: event.target.value }))}
+                placeholder="retry_max"
+              />
+              <textarea
+                value={targetForm.headers_json}
+                onChange={(event) => setTargetForm((current) => ({ ...current, headers_json: event.target.value }))}
+                rows={3}
+                placeholder='headers_json, z. B. {"Authorization":"Bearer ..."}'
+              />
+              <textarea
+                value={targetForm.payload_template_json}
+                onChange={(event) =>
+                  setTargetForm((current) => ({ ...current, payload_template_json: event.target.value }))
+                }
+                rows={3}
+                placeholder='payload_template_json (optional)'
+              />
+            </div>
+            <div className="actions-row">
+              <button type="button" onClick={submitOutputTarget}>
+                {targetEditId === null ? "Target anlegen" : "Target aktualisieren"}
+              </button>
+              {targetEditId !== null ? (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    setTargetEditId(null);
+                    setTargetForm({
+                      resource_id: "",
+                      webhook_url: "",
+                      method: "POST",
+                      enabled: true,
+                      timeout_seconds: "10",
+                      retry_max: "2",
+                      headers_json: "{}",
+                      payload_template_json: "",
+                    });
+                  }}
+                >
+                  Edit abbrechen
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="panel">
+            <h3>Plausibilität</h3>
+            {plausibility === null ? (
+              <p>Keine Plausibilitätsdaten.</p>
+            ) : (
+              <>
+                <p className="meta-text">
+                  Run {plausibility.run_id} | Status:{" "}
+                  <span className={`chip ${plausibility.status === "ok" ? "chip-ok" : plausibility.status === "warn" ? "chip-warning" : "chip-danger"}`}>
+                    {plausibility.status}
+                  </span>
+                </p>
+                <ul className="plain-list">
+                  {plausibility.findings.map((finding) => (
+                    <li key={`${finding.code}-${finding.message}`}>
+                      <span className={`chip ${finding.level === "ok" ? "chip-ok" : finding.level === "warn" ? "chip-warning" : "chip-danger"}`}>
+                        {finding.level}
+                      </span>{" "}
+                      <strong>{finding.code}</strong>: {finding.message}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+
+          <div className="panel">
+            <details>
+              <summary><strong>Plan (JSON)</strong></summary>
+              <pre>{prettyJson(plan?.payload_json ?? null)}</pre>
+            </details>
+            <details>
+              <summary><strong>Solution (JSON)</strong></summary>
+              <pre>{prettyJson(solution?.payload_json ?? null)}</pre>
+            </details>
           </div>
         </section>
-      </main>
+      </div>
     </div>
+  );
+}
+
+type FieldListProps = {
+  fields: SetupField[];
+  drafts: Record<string, DraftState>;
+  onChange: (field: SetupField, value: string) => void;
+  onBlur: (fieldId: string) => void;
+};
+
+function FieldList({ fields, drafts, onChange, onBlur }: FieldListProps) {
+  if (fields.length === 0) {
+    return <p>Keine Felder.</p>;
+  }
+
+  const providerField = fields.find((field) => field.field_id === "param.pvforecast.provider");
+  const providerValue = providerField
+    ? (drafts[providerField.field_id]?.value ?? toInputString(providerField))
+    : "";
+
+  return (
+    <div className="field-list">
+      {fields.map((field) => {
+        const draft = drafts[field.field_id];
+        const currentInput = draft ? draft.value : toInputString(field);
+        const statusLabel = fieldStatusLabel(field, draft);
+        const statusClass = fieldStatusClass(field, draft);
+        const isCritical = field.required && (field.missing || !field.valid || Boolean(draft?.dirty));
+
+        const azimuthWorkaroundHint =
+          field.field_id === "param.pvforecast.planes.0.surface_azimuth" &&
+          providerValue === "PVForecastAkkudoktor"
+            ? "Akkudoktor-Kompatibilität aktiv: 180° (Süden) wird intern minimal auf 179.9° übertragen, um einen bekannten Provider-Edge-Case zu vermeiden."
+            : null;
+
+        return (
+          <div key={field.field_id} className={`setup-field${isCritical ? " setup-field-critical" : ""}`}>
+            <div className="field-head">
+              <div>
+                <strong>{field.label}</strong>
+                <div className="meta-text">
+                  <code>{field.field_id}</code>
+                </div>
+              </div>
+              <div className="chip-row">
+                <span className={`chip ${field.required ? "chip-danger" : "chip-neutral"}`}>
+                  {field.required ? "Pflicht" : "Optional"}
+                </span>
+                <span className={`chip ${statusClass}`}>{statusLabel}</span>
+                <span className={`chip ${field.http_override_active ? "chip-ok" : "chip-neutral"}`}>
+                  HTTP {field.http_override_active ? "aktiv" : "inaktiv"}
+                </span>
+              </div>
+            </div>
+
+            <div className="field-control">
+              <FieldInput field={field} value={currentInput} onChange={onChange} onBlur={onBlur} />
+              {field.unit ? <span className="unit-tag">{field.unit}</span> : null}
+            </div>
+
+            <div className="meta-text">
+              HTTP-Pfad: <code>{field.http_path_template}</code>
+            </div>
+            {azimuthWorkaroundHint ? <div className="field-info">{azimuthWorkaroundHint}</div> : null}
+            <div className="meta-text">
+              Quelle: <strong>{field.last_source ?? "-"}</strong> | Letztes Update: <strong>{formatTimestamp(field.last_update_ts)}</strong>
+            </div>
+            <div className="meta-text">
+              Letzter HTTP-Trigger: <strong>{formatTimestamp(field.http_override_last_ts)}</strong>
+            </div>
+            {draft?.saving ? <div className="meta-text">speichert...</div> : null}
+            {draft?.error ? <div className="field-error">{draft.error}</div> : null}
+            {!draft?.error && field.error ? <div className="field-error">{field.error}</div> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+type FieldInputProps = {
+  field: SetupField;
+  value: string;
+  onChange: (field: SetupField, value: string) => void;
+  onBlur: (fieldId: string) => void;
+};
+
+function FieldInput({ field, value, onChange, onBlur }: FieldInputProps) {
+  if (field.value_type === "select") {
+    return (
+      <select
+        value={value}
+        onChange={(event) => onChange(field, event.target.value)}
+        onBlur={() => onBlur(field.field_id)}
+      >
+        <option value="">Bitte wählen...</option>
+        {field.options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  if (field.value_type === "string_list") {
+    return (
+      <input
+        type="text"
+        value={value}
+        onChange={(event) => onChange(field, event.target.value)}
+        onBlur={() => onBlur(field.field_id)}
+        placeholder="wert1, wert2, wert3"
+      />
+    );
+  }
+
+  if (field.value_type === "number") {
+    return (
+      <input
+        type="number"
+        value={value}
+        onChange={(event) => onChange(field, event.target.value)}
+        onBlur={() => onBlur(field.field_id)}
+      />
+    );
+  }
+
+  return (
+    <input
+      type="text"
+      value={value}
+      onChange={(event) => onChange(field, event.target.value)}
+      onBlur={() => onBlur(field.field_id)}
+    />
   );
 }

@@ -19,8 +19,8 @@ def get_eos_fields(
             label=entry.label,
             description=entry.description,
             suggested_units=entry.suggested_units,
+            info_notes=entry.info_notes,
             sources=entry.sources,
         )
         for entry in entries
     ]
-

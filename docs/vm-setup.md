@@ -16,26 +16,32 @@ We use Debian netinstall ISO:
 - Disk: 40 GB
 - Network: vmbr0
 
-## Bootstrap commands (root)
-
-```bash
-apt-get update -y
-apt-get install -y ca-certificates curl gnupg lsb-release git docker.io docker-compose
-systemctl enable --now docker
-```
-
-## Stack start
+## Recommended bootstrap (script-first)
 
 ```bash
 cd /opt/eos-webapp
-docker-compose -f infra/docker-compose.yml up -d
+sudo ./scripts/auto-install.sh
+```
+
+The script installs host dependencies (`curl`, `jq`, `ripgrep`, `docker.io`, docker compose plugin), starts the stack, runs migrations, and performs health checks.
+
+## Manual bootstrap (fallback)
+
+```bash
+apt-get update -y
+apt-get install -y ca-certificates curl jq ripgrep git docker.io docker-compose-plugin
+systemctl enable --now docker
+
+cd /opt/eos-webapp
+cp .env.example .env
+docker compose -f infra/docker-compose.yml up -d --build
+docker compose -f infra/docker-compose.yml exec -T backend alembic upgrade head
 ```
 
 ## Expected local endpoints
 
-- Frontend scaffold: `http://<vm-ip>:3000`
-- Backend scaffold: `http://<vm-ip>:8080`
+- Frontend: `http://<vm-ip>:3000`
+- Backend: `http://<vm-ip>:8080`
 - EOS API docs: `http://<vm-ip>:8503/docs`
 - EOS dashboard: `http://<vm-ip>:8504`
 - Postgres: `<vm-ip>:5432`
-```
