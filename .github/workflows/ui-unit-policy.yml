@@ -1,0 +1,49 @@
+name: UI Unit Policy
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check-ui-unit-policy:
+    name: Check UI Unit Policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare env
+        run: cp .env.example .env
+
+      - name: Start Postgres
+        run: docker compose -f infra/docker-compose.yml up -d postgres
+
+      - name: Build and start backend
+        run: docker compose -f infra/docker-compose.yml up -d --build --no-deps backend
+
+      - name: Wait for backend health
+        run: |
+          for i in $(seq 1 90); do
+            if curl -fsS "http://127.0.0.1:8080/health" >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "backend health endpoint did not become ready in time" >&2
+          exit 1
+
+      - name: Run migrations
+        run: docker compose -f infra/docker-compose.yml exec -T backend alembic upgrade head
+
+      - name: Run UI unit policy checks
+        run: ./scripts/check-ui-unit-policy.sh "http://127.0.0.1:8080"
+
+      - name: Print backend logs on failure
+        if: failure()
+        run: docker compose -f infra/docker-compose.yml logs backend
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down -v --remove-orphans

@@ -34,6 +34,10 @@ Consistency check:
 ./scripts/check-ui-unit-policy.sh
 ```
 
+CI guardrail:
+
+- GitHub Actions workflow: `.github/workflows/ui-unit-policy.yml`
+
 ## Dependencies
 
 Backend Python dependencies are in `backend/requirements.txt` (including `pandas==2.2.3`).

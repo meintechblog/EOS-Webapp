@@ -63,3 +63,11 @@ The script checks:
 - no forbidden display units (`W`, `Wh`, `EUR/kWh`, `EUR/Wh`) in setup field units
 - setup HTTP templates do not expose legacy unit paths
 - setup export signal keys do not expose `_w`/`_wh`
+
+## CI enforcement
+
+GitHub workflow:
+
+- `.github/workflows/ui-unit-policy.yml`
+
+The workflow starts backend + database, runs migrations, and executes `./scripts/check-ui-unit-policy.sh` on every push and pull request.
