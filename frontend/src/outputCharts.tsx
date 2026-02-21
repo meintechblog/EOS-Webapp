@@ -1,12 +1,11 @@
 import { useMemo } from "react";
 
-import type { EosOutputCurrentItem, EosOutputTimelineItem, OutputDispatchEvent } from "./types";
+import type { EosOutputCurrentItem, EosOutputTimelineItem } from "./types";
 
 type OutputChartsPanelProps = {
   runId: number | null;
   timeline: EosOutputTimelineItem[];
   current: EosOutputCurrentItem[];
-  events: OutputDispatchEvent[];
 };
 
 type TimelinePoint = {
@@ -36,15 +35,6 @@ type FactorPoint = {
   value: number;
 };
 
-type DispatchStatus = "sent" | "blocked" | "failed" | "retrying" | "skipped_no_target" | "other";
-
-type DispatchBin = {
-  startMs: number;
-  endMs: number;
-  counts: Record<DispatchStatus, number>;
-  total: number;
-};
-
 type ChartModel = {
   windowStartMs: number;
   windowEndMs: number;
@@ -53,8 +43,6 @@ type ChartModel = {
   resourceOrder: string[];
   factorSeries: Record<string, FactorPoint[]>;
   currentPoints: CurrentPoint[];
-  dispatchBins: DispatchBin[];
-  dispatchMaxCount: number;
   hasAnyData: boolean;
 };
 
@@ -79,33 +67,6 @@ const MODE_COLORS = [
   "#F27FB5",
   "#A1E06E",
 ];
-
-const DISPATCH_STATUS_ORDER: DispatchStatus[] = [
-  "sent",
-  "blocked",
-  "failed",
-  "retrying",
-  "skipped_no_target",
-  "other",
-];
-
-const DISPATCH_STATUS_COLORS: Record<DispatchStatus, string> = {
-  sent: "#28C89B",
-  blocked: "#FFBF75",
-  failed: "#FF8177",
-  retrying: "#7DA6FF",
-  skipped_no_target: "#C6B6FF",
-  other: "#7C8CA9",
-};
-
-const DISPATCH_STATUS_LABELS: Record<DispatchStatus, string> = {
-  sent: "sent",
-  blocked: "blocked",
-  failed: "failed",
-  retrying: "retrying",
-  skipped_no_target: "skipped",
-  other: "other",
-};
 
 function toTimestampMs(value: string | null | undefined): number | null {
   if (!value) {
@@ -163,26 +124,6 @@ function mapY(value: number, minValue: number, maxValue: number, top: number, bo
 function normalizeMode(mode: string | null): string {
   const normalized = (mode ?? "").trim();
   return normalized === "" ? "UNKNOWN" : normalized;
-}
-
-function normalizeDispatchStatus(rawStatus: string): DispatchStatus {
-  const status = rawStatus.toLowerCase().trim();
-  if (status === "sent") {
-    return "sent";
-  }
-  if (status === "blocked") {
-    return "blocked";
-  }
-  if (status === "failed") {
-    return "failed";
-  }
-  if (status === "retrying") {
-    return "retrying";
-  }
-  if (status === "skipped_no_target") {
-    return "skipped_no_target";
-  }
-  return "other";
 }
 
 function parseTimelinePoints(timeline: EosOutputTimelineItem[]): TimelinePoint[] {
@@ -329,69 +270,12 @@ function buildFactorSeries(points: TimelinePoint[], current: CurrentPoint[]): Re
   }
   return normalized;
 }
-
-function buildDispatchBins(events: OutputDispatchEvent[]): { bins: DispatchBin[]; maxCount: number } {
-  const parsed = events
-    .map((event) => {
-      const tsMs = toTimestampMs(event.created_at);
-      if (tsMs === null) {
-        return null;
-      }
-      return { tsMs, status: normalizeDispatchStatus(event.status) };
-    })
-    .filter((item): item is { tsMs: number; status: DispatchStatus } => item !== null)
-    .sort((left, right) => left.tsMs - right.tsMs);
-
-  if (parsed.length === 0) {
-    return { bins: [], maxCount: 0 };
-  }
-
-  const minTs = parsed[0].tsMs;
-  const maxTs = parsed[parsed.length - 1].tsMs;
-  const spanHours = Math.max(1, (maxTs - minTs) / (1000 * 60 * 60));
-  const binHours = spanHours <= 18 ? 1 : spanHours <= 54 ? 3 : 6;
-  const binMs = binHours * 1000 * 60 * 60;
-  const alignedStart = Math.floor(minTs / binMs) * binMs;
-  const alignedEnd = Math.ceil(maxTs / binMs) * binMs + binMs;
-
-  const bins: DispatchBin[] = [];
-  for (let cursor = alignedStart; cursor < alignedEnd; cursor += binMs) {
-    bins.push({
-      startMs: cursor,
-      endMs: cursor + binMs,
-      counts: {
-        sent: 0,
-        blocked: 0,
-        failed: 0,
-        retrying: 0,
-        skipped_no_target: 0,
-        other: 0,
-      },
-      total: 0,
-    });
-  }
-
-  for (const item of parsed) {
-    const index = Math.min(bins.length - 1, Math.max(0, Math.floor((item.tsMs - alignedStart) / binMs)));
-    bins[index].counts[item.status] += 1;
-    bins[index].total += 1;
-  }
-
-  const maxCount = bins.reduce((result, row) => Math.max(result, row.total), 0);
-  return { bins, maxCount };
-}
-
-function buildChartModel(
-  timeline: EosOutputTimelineItem[],
-  current: EosOutputCurrentItem[],
-  events: OutputDispatchEvent[],
-): ChartModel {
+function buildChartModel(timeline: EosOutputTimelineItem[], current: EosOutputCurrentItem[]): ChartModel {
   const timelinePoints = parseTimelinePoints(timeline);
   const currentPoints = parseCurrentPoints(current);
   const { startMs, endMs } = deriveWindow(timelinePoints, currentPoints);
   const modeSegments = buildModeSegments(timelinePoints, endMs);
   const factorSeries = buildFactorSeries(timelinePoints, currentPoints);
-  const { bins, maxCount } = buildDispatchBins(events);
 
   const modeLegend = Array.from(new Set(modeSegments.map((segment) => segment.mode))).sort((left, right) =>
     left.localeCompare(right),
@@ -410,9 +294,7 @@ function buildChartModel(
     resourceOrder,
     factorSeries,
     currentPoints,
-    dispatchBins: bins,
-    dispatchMaxCount: maxCount,
-    hasAnyData: timelinePoints.length > 0 || currentPoints.length > 0 || bins.length > 0,
+    hasAnyData: timelinePoints.length > 0 || currentPoints.length > 0,
   };
 }
 
@@ -603,105 +485,8 @@ function FactorTimelineChart({ model }: { model: ChartModel }) {
     </section>
   );
 }
-
-function DispatchStackedChart({ model }: { model: ChartModel }) {
-  const width = 960;
-  const height = 320;
-  const top = 18;
-  const left = 56;
-  const right = width - 12;
-  const bottom = height - 28;
-
-  if (model.dispatchBins.length === 0) {
-    return (
-      <section className="output-chart-card">
-        <h4>Dispatch-Status je Zeitfenster</h4>
-        <p className="meta-text">Keine Dispatch-Events fur den ausgewahlten Run vorhanden.</p>
-      </section>
-    );
-  }
-
-  const startMs = model.dispatchBins[0].startMs;
-  const endMs = model.dispatchBins[model.dispatchBins.length - 1].endMs;
-  const spanMs = endMs - startMs;
-  const ticks = createTimeTicks(startMs, endMs, 6);
-  const yMax = Math.max(1, model.dispatchMaxCount);
-  const yTicks = [0, Math.ceil(yMax * 0.33), Math.ceil(yMax * 0.66), yMax];
-  const barSlot = (right - left) / model.dispatchBins.length;
-  const barWidth = Math.max(4, barSlot * 0.68);
-
-  return (
-    <section className="output-chart-card">
-      <h4>Dispatch-Status je Zeitfenster</h4>
-      <p className="meta-text">Gestapelte Balken aus HTTP-Dispatch-Events (Zeitbezug uber `created_at`).</p>
-      <svg viewBox={`0 0 ${width} ${height}`} className="output-chart-svg" role="img" aria-label="Dispatch status chart">
-        {yTicks.map((tick) => {
-          const y = mapY(tick, 0, yMax, top, bottom);
-          return (
-            <g key={`dispatch-y-${tick}`}>
-              <line x1={left} y1={y} x2={right} y2={y} stroke="rgba(86,121,188,0.28)" strokeWidth="1" />
-              <text x={left - 8} y={y + 4} textAnchor="end" fill="#9EB0D2" fontSize="11">
-                {tick}
-              </text>
-            </g>
-          );
-        })}
-        {ticks.map((tick) => {
-          const x = mapX(tick, startMs, endMs, left, right);
-          return (
-            <g key={`dispatch-x-${tick}`}>
-              <line x1={x} y1={top} x2={x} y2={bottom} stroke="rgba(86,121,188,0.2)" strokeWidth="1" />
-              <text x={x} y={height - 10} textAnchor="middle" fill="#9EB0D2" fontSize="11">
-                {formatTimeTick(tick, spanMs)}
-              </text>
-            </g>
-          );
-        })}
-        {model.dispatchBins.map((bin, index) => {
-          const centerMs = bin.startMs + (bin.endMs - bin.startMs) / 2;
-          const centerX = mapX(centerMs, startMs, endMs, left, right);
-          const x = centerX - barWidth / 2;
-          let stackTop = bottom;
-          return (
-            <g key={`dispatch-bin-${index}`}>
-              {DISPATCH_STATUS_ORDER.map((status) => {
-                const count = bin.counts[status];
-                if (count <= 0) {
-                  return null;
-                }
-                const y = mapY(count, 0, yMax, top, bottom);
-                const h = bottom - y;
-                stackTop -= h;
-                return (
-                  <rect
-                    key={`dispatch-bin-${index}-${status}`}
-                    x={x}
-                    y={stackTop}
-                    width={barWidth}
-                    height={h}
-                    fill={DISPATCH_STATUS_COLORS[status]}
-                    opacity="0.84"
-                  />
-                );
-              })}
-            </g>
-          );
-        })}
-      </svg>
-      <div className="chart-legend">
-        {DISPATCH_STATUS_ORDER.map((status) => (
-          <span key={`dispatch-legend-${status}`} className="legend-item">
-            <i style={{ backgroundColor: DISPATCH_STATUS_COLORS[status] }} />
-            <span>{DISPATCH_STATUS_LABELS[status]}</span>
-          </span>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-export function OutputChartsPanel({ runId, timeline, current, events }: OutputChartsPanelProps) {
-  const model = useMemo(() => buildChartModel(timeline, current, events), [timeline, current, events]);
+export function OutputChartsPanel({ runId, timeline, current }: OutputChartsPanelProps) {
+  const model = useMemo(() => buildChartModel(timeline, current), [timeline, current]);
 
   return (
     <div className="panel">
@@ -718,11 +503,9 @@ export function OutputChartsPanel({ runId, timeline, current, events }: OutputCh
           <div className="output-chart-grid">
             <ModeTimelineChart model={model} />
             <FactorTimelineChart model={model} />
-            <DispatchStackedChart model={model} />
           </div>
         ) : null}
       </details>
     </div>
   );
 }
-

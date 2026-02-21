@@ -146,6 +146,14 @@ function runSourceLabel(triggerSource: string): string {
   return triggerSource;
 }
 
+function normalizeResourceId(resourceId: string | null | undefined): string {
+  return (resourceId ?? "").trim().toLowerCase();
+}
+
+function isHomeApplianceResourceId(resourceId: string | null | undefined): boolean {
+  return /^homeappliance\d+$/.test(normalizeResourceId(resourceId));
+}
+
 function buildRunHints(run: EosRunDetail | null, plan: EosRunPlan | null, solution: EosRunSolution | null): string[] {
   if (!run) {
     return [];
@@ -754,6 +762,112 @@ export default function App() {
     [selectedRunDetail, plan, solution],
   );
 
+  const configuredHomeApplianceResourceIds = useMemo(() => {
+    const configPayload = runtime?.config_payload;
+    if (configPayload === null || typeof configPayload !== "object" || Array.isArray(configPayload)) {
+      return new Set<string>();
+    }
+
+    const devicesValue = (configPayload as Record<string, unknown>).devices;
+    if (devicesValue === null || typeof devicesValue !== "object" || Array.isArray(devicesValue)) {
+      return new Set<string>();
+    }
+
+    const devices = devicesValue as Record<string, unknown>;
+    const homeAppliances = Array.isArray(devices.home_appliances) ? devices.home_appliances : [];
+    const maxHomeAppliancesRaw = devices.max_home_appliances;
+    const parsedMaxHomeAppliances =
+      typeof maxHomeAppliancesRaw === "number"
+        ? maxHomeAppliancesRaw
+        : typeof maxHomeAppliancesRaw === "string" && maxHomeAppliancesRaw.trim() !== ""
+          ? Number(maxHomeAppliancesRaw)
+          : null;
+    const maxHomeAppliances =
+      parsedMaxHomeAppliances !== null && Number.isFinite(parsedMaxHomeAppliances)
+        ? Math.max(0, Math.floor(parsedMaxHomeAppliances))
+        : null;
+
+    if (maxHomeAppliances === 0) {
+      return new Set<string>();
+    }
+
+    let configuredCount = 0;
+    for (const item of homeAppliances) {
+      if (item === null || typeof item !== "object" || Array.isArray(item)) {
+        continue;
+      }
+      const deviceId = (item as Record<string, unknown>).device_id;
+      if (typeof deviceId === "string" && deviceId.trim() !== "") {
+        configuredCount += 1;
+      }
+    }
+
+    if (configuredCount === 0) {
+      return new Set<string>();
+    }
+
+    const usableCount = maxHomeAppliances === null ? configuredCount : Math.min(configuredCount, maxHomeAppliances);
+    const resourceIds = new Set<string>();
+    for (let index = 1; index <= usableCount; index += 1) {
+      resourceIds.add(`homeappliance${index}`);
+    }
+    return resourceIds;
+  }, [runtime]);
+
+  const enabledHomeApplianceTargets = useMemo(() => {
+    const resources = new Set<string>();
+    for (const target of outputTargets) {
+      if (!target.enabled || !isHomeApplianceResourceId(target.resource_id)) {
+        continue;
+      }
+      resources.add(normalizeResourceId(target.resource_id));
+    }
+    return resources;
+  }, [outputTargets]);
+
+  const showHomeApplianceOutputs = useMemo(() => {
+    if (configuredHomeApplianceResourceIds.size === 0) {
+      return false;
+    }
+    for (const resourceId of configuredHomeApplianceResourceIds) {
+      if (enabledHomeApplianceTargets.has(resourceId)) {
+        return true;
+      }
+    }
+    return false;
+  }, [configuredHomeApplianceResourceIds, enabledHomeApplianceTargets]);
+
+  const isVisibleOutputResource = useCallback(
+    (resourceId: string | null | undefined): boolean => {
+      if (!isHomeApplianceResourceId(resourceId)) {
+        return true;
+      }
+      return showHomeApplianceOutputs;
+    },
+    [showHomeApplianceOutputs],
+  );
+
+  const visibleOutputCurrent = useMemo(
+    () => outputCurrent.filter((item) => isVisibleOutputResource(item.resource_id)),
+    [outputCurrent, isVisibleOutputResource],
+  );
+
+  const visibleOutputTimeline = useMemo(
+    () => outputTimeline.filter((item) => isVisibleOutputResource(item.resource_id)),
+    [outputTimeline, isVisibleOutputResource],
+  );
+
+  const visibleOutputEvents = useMemo(
+    () =>
+      outputEvents.filter((event) => {
+        if (event.resource_id === null) {
+          return true;
+        }
+        return isVisibleOutputResource(event.resource_id);
+      }),
+    [outputEvents, isVisibleOutputResource],
+  );
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -985,9 +1099,8 @@ export default function App() {
 
           <OutputChartsPanel
             runId={selectedRunId}
-            timeline={outputTimeline}
-            current={outputCurrent}
-            events={outputEvents}
+            timeline={visibleOutputTimeline}
+            current={visibleOutputCurrent}
           />
 
           <div className="panel">
@@ -998,7 +1111,7 @@ export default function App() {
               </button>
             </div>
             {dispatchMessage ? <p className="meta-text">{dispatchMessage}</p> : null}
-            {outputCurrent.length === 0 ? (
+            {visibleOutputCurrent.length === 0 ? (
               <p>Keine aktive Entscheidung verfügbar.</p>
             ) : (
               <div className="data-table">
@@ -1009,7 +1122,7 @@ export default function App() {
                   <span>Effective</span>
                   <span>Safety</span>
                 </div>
-                {outputCurrent.map((item) => (
+                {visibleOutputCurrent.map((item) => (
                   <div key={`${item.resource_id}-${item.effective_at ?? "na"}`} className="table-row">
                     <span>{item.resource_id}</span>
                     <span>{item.operation_mode_id ?? "-"}</span>
@@ -1026,7 +1139,7 @@ export default function App() {
 
           <div className="panel">
             <h3>Nächste Zustandswechsel</h3>
-            {outputTimeline.length === 0 ? (
+            {visibleOutputTimeline.length === 0 ? (
               <p>Keine Timeline-Einträge.</p>
             ) : (
               <div className="data-table">
@@ -1037,7 +1150,7 @@ export default function App() {
                   <span>Mode</span>
                   <span>Faktor</span>
                 </div>
-                {outputTimeline.slice(0, 20).map((item) => (
+                {visibleOutputTimeline.slice(0, 20).map((item) => (
                   <div key={`${item.instruction_id}-${item.execution_time ?? "na"}`} className="table-row">
                     <span>{formatTimestamp(item.execution_time ?? item.starts_at)}</span>
                     <span>{item.resource_id}</span>
@@ -1052,7 +1165,7 @@ export default function App() {
 
           <div className="panel">
             <h3>Dispatch-Log</h3>
-            {outputEvents.length === 0 ? (
+            {visibleOutputEvents.length === 0 ? (
               <p>Noch keine Dispatch-Events.</p>
             ) : (
               <div className="data-table">
@@ -1063,7 +1176,7 @@ export default function App() {
                   <span>Status</span>
                   <span>HTTP</span>
                 </div>
-                {outputEvents.slice(0, 25).map((event) => (
+                {visibleOutputEvents.slice(0, 25).map((event) => (
                   <div key={event.id} className="table-row">
                     <span>{formatTimestamp(event.created_at)}</span>
                     <span>{event.resource_id ?? "-"}</span>
