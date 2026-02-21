@@ -7,6 +7,7 @@ import type {
   EosRunPlausibility,
   EosRunDetail,
   EosRunPlan,
+  EosRunContext,
   EosRunSolution,
   EosRunSummary,
   EosRuntime,
@@ -133,6 +134,10 @@ export function getEosRunPlan(runId: number): Promise<EosRunPlan> {
 
 export function getEosRunSolution(runId: number): Promise<EosRunSolution> {
   return apiRequest<EosRunSolution>(`/api/eos/runs/${runId}/solution`);
+}
+
+export function getEosRunContext(runId: number): Promise<EosRunContext> {
+  return apiRequest<EosRunContext>(`/api/eos/runs/${runId}/context`);
 }
 
 export function getEosOutputsCurrent(runId?: number): Promise<EosOutputCurrentItem[]> {

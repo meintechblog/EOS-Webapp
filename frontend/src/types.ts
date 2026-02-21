@@ -150,6 +150,18 @@ export type EosRunSolution = {
   payload_json: Record<string, unknown> | unknown[] | null;
 };
 
+export type EosRunContext = {
+  run_id: number;
+  parameter_profile_id: number | null;
+  parameter_revision_id: number | null;
+  parameter_payload_json: Record<string, unknown> | unknown[];
+  mappings_snapshot_json: Record<string, unknown> | unknown[];
+  live_state_snapshot_json: Record<string, unknown> | unknown[];
+  runtime_config_snapshot_json: Record<string, unknown> | unknown[];
+  assembled_eos_input_json: Record<string, unknown> | unknown[];
+  created_at: string;
+};
+
 export type EosOutputCurrentItem = {
   run_id: number;
   resource_id: string;

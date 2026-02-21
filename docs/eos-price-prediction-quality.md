@@ -33,10 +33,13 @@ This note documents practical levers to improve electricity-price prediction qua
 - Run-Center now exposes a prominent horizon dropdown.
 - On apply, Webapp updates:
   - `prediction.hours`
-  - `prediction.historic_hours` (adaptive, with minimum target `840h`)
+  - `prediction.historic_hours` (adaptive: minimum `840h`, currently capped at `2160h`)
   - and, when available in payload, `optimization.horizon_hours` or legacy `optimization.hours`
 - Run-Historie shows live runtime for running jobs and final runtime for finished jobs.
-- Run-Historie entries include per-run prediction metrics (derived horizon, point count, price range when available).
+- Run-Historie entries include per-run prediction metrics:
+  - configured target horizon (from run context snapshot),
+  - effective solution horizon (derived from prediction timestamps),
+  - configured historic horizon, point count, and price range (when available).
 
 ## Sources
 

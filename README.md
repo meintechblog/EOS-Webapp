@@ -44,10 +44,10 @@ CI guardrail:
 ## Run-Center Horizon + Runtime
 
 - Run-Center contains a prominent horizon dropdown.
-- It writes `prediction.hours` and `prediction.historic_hours` (adaptive, minimum target `840h`).
+- It writes `prediction.hours` and `prediction.historic_hours` (adaptive, minimum `840h`, cap `2160h`).
 - If available in current EOS payload, it also writes `optimization.horizon_hours` (or legacy `optimization.hours`).
 - Run history shows live runtime for active runs and final duration for completed runs.
-- Run history entries include per-run prediction metrics (derived horizon, point count, price range when available).
+- Run history entries include per-run prediction metrics (target horizon from run context, effective horizon, historic horizon, point count, price range when available).
 
 ## Dependencies
 

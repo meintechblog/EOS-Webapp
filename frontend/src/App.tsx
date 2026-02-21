@@ -7,6 +7,7 @@ import {
   getEosOutputEvents,
   getEosOutputsCurrent,
   getEosOutputsTimeline,
+  getEosRunContext,
   getEosRunPlausibility,
   getEosRunDetail,
   getEosRunPlan,
@@ -50,10 +51,19 @@ type DraftState = {
 
 type RunPredictionMetrics = {
   horizonHours: number | null;
-  pointCount: number;
+  pointCount: number | null;
   intervalMinutes: number | null;
   minPriceCt: number | null;
   maxPriceCt: number | null;
+  targetPredictionHours: number | null;
+  targetHistoricHours: number | null;
+  targetOptimizationHours: number | null;
+};
+
+type RunTargetMetrics = {
+  targetPredictionHours: number | null;
+  targetHistoricHours: number | null;
+  targetOptimizationHours: number | null;
 };
 
 const AUTOSAVE_MS = 1500;
@@ -259,6 +269,60 @@ function extractRunPredictionMetrics(solutionPayload: unknown): RunPredictionMet
     intervalMinutes,
     minPriceCt: pricedRows.length > 0 ? Math.min(...pricedRows) : null,
     maxPriceCt: pricedRows.length > 0 ? Math.max(...pricedRows) : null,
+    targetPredictionHours: null,
+    targetHistoricHours: null,
+    targetOptimizationHours: null,
+  };
+}
+
+function extractRunTargetMetrics(contextPayload: unknown): RunTargetMetrics | null {
+  const root = asObject(contextPayload);
+  if (!root) {
+    return null;
+  }
+  const runtimeSnapshot = asObject(root.runtime_config_snapshot_json);
+  const assembledInput = asObject(root.assembled_eos_input_json);
+  const source = runtimeSnapshot ?? assembledInput;
+  if (!source) {
+    return null;
+  }
+
+  const prediction = asObject(source.prediction);
+  const optimization = asObject(source.optimization);
+  const targetPredictionHours = toFiniteNumber(prediction?.hours);
+  const targetHistoricHours = toFiniteNumber(prediction?.historic_hours);
+  const targetOptimizationHours =
+    toFiniteNumber(optimization?.horizon_hours) ??
+    toFiniteNumber(optimization?.hours);
+
+  if (targetPredictionHours === null && targetHistoricHours === null && targetOptimizationHours === null) {
+    return null;
+  }
+
+  return {
+    targetPredictionHours,
+    targetHistoricHours,
+    targetOptimizationHours,
+  };
+}
+
+function mergeRunMetrics(
+  predictionMetrics: RunPredictionMetrics | null,
+  targetMetrics: RunTargetMetrics | null,
+): RunPredictionMetrics | null {
+  if (predictionMetrics === null && targetMetrics === null) {
+    return null;
+  }
+
+  return {
+    horizonHours: predictionMetrics?.horizonHours ?? null,
+    pointCount: predictionMetrics?.pointCount ?? null,
+    intervalMinutes: predictionMetrics?.intervalMinutes ?? null,
+    minPriceCt: predictionMetrics?.minPriceCt ?? null,
+    maxPriceCt: predictionMetrics?.maxPriceCt ?? null,
+    targetPredictionHours: targetMetrics?.targetPredictionHours ?? null,
+    targetHistoricHours: targetMetrics?.targetHistoricHours ?? null,
+    targetOptimizationHours: targetMetrics?.targetOptimizationHours ?? null,
   };
 }
 
@@ -267,21 +331,34 @@ function formatRunMetricsLabel(
   metrics: RunPredictionMetrics | null | undefined,
   fallbackHorizonHours: number,
 ): string {
-  if (run.trigger_source === "prediction_refresh") {
-    return "Prediction-Refresh (ohne Solution-Fahrplan)";
-  }
   if (metrics === undefined) {
     return "Kennzahlen werden geladen...";
   }
-  if (metrics === null) {
-    return `Ziel-Horizont ${fallbackHorizonHours}h`;
-  }
 
   const parts: string[] = [];
-  if (metrics.horizonHours !== null) {
-    parts.push(`Horizont ${metrics.horizonHours.toFixed(1)}h`);
+  if (run.trigger_source === "prediction_refresh") {
+    parts.push("Prediction-Refresh");
   }
-  parts.push(`${metrics.pointCount} Punkte`);
+  if (metrics === null) {
+    parts.push(`Ziel ${fallbackHorizonHours}h`);
+    return parts.join(" | ");
+  }
+
+  const targetHours =
+    metrics.targetPredictionHours ??
+    metrics.targetOptimizationHours ??
+    fallbackHorizonHours;
+  parts.push(`Ziel ${Math.max(1, Math.round(targetHours))}h`);
+
+  if (metrics.horizonHours !== null) {
+    parts.push(`Effektiv ${metrics.horizonHours.toFixed(1)}h`);
+  }
+  if (metrics.targetHistoricHours !== null) {
+    parts.push(`Hist ${Math.max(1, Math.round(metrics.targetHistoricHours))}h`);
+  }
+  if (metrics.pointCount !== null) {
+    parts.push(`${metrics.pointCount} Punkte`);
+  }
   if (metrics.minPriceCt !== null && metrics.maxPriceCt !== null) {
     parts.push(`${metrics.minPriceCt.toFixed(2)}-${metrics.maxPriceCt.toFixed(2)} ct/kWh`);
   }
@@ -1139,8 +1216,14 @@ export default function App() {
   }, [runs, runSourceFilter, runStatusFilter]);
 
   const runMetricCandidateIds = useMemo(
-    () => filteredRuns.slice(0, 40).map((run) => run.id),
-    [filteredRuns],
+    () => {
+      const ids = filteredRuns.slice(0, 40).map((run) => run.id);
+      if (selectedRunId !== null && !ids.includes(selectedRunId)) {
+        ids.push(selectedRunId);
+      }
+      return ids;
+    },
+    [filteredRuns, selectedRunId],
   );
 
   useEffect(() => {
@@ -1162,8 +1245,16 @@ export default function App() {
       const loaded = await Promise.all(
         missingIds.map(async (runId) => {
           try {
-            const solutionData = await getEosRunSolution(runId);
-            return [runId, extractRunPredictionMetrics(solutionData.payload_json)] as const;
+            const [solutionResult, contextResult] = await Promise.allSettled([
+              getEosRunSolution(runId),
+              getEosRunContext(runId),
+            ]);
+            const solutionPayload =
+              solutionResult.status === "fulfilled" ? solutionResult.value.payload_json : null;
+            const predictionMetrics = extractRunPredictionMetrics(solutionPayload);
+            const targetMetrics =
+              contextResult.status === "fulfilled" ? extractRunTargetMetrics(contextResult.value) : null;
+            return [runId, mergeRunMetrics(predictionMetrics, targetMetrics)] as const;
           } catch {
             return [runId, null] as const;
           }
