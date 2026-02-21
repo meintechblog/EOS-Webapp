@@ -591,7 +591,7 @@ class SetupFieldService:
             SetupFieldDef("param.elecprice.vat_rate", "optional", "MwSt Faktor", False, "number", "x", None, 0, None, ("elecprice", "vat_rate"), None, "/eos/set/param/elecprice/vat_rate=<value>"),
             SetupFieldDef("param.elecprice.energycharts.bidding_zone", "optional", "EnergyCharts Zone", False, "select", None, "elecprice.energycharts.bidding_zone", None, None, ("elecprice", "energycharts", "bidding_zone"), None, "/eos/set/param/elecprice/energycharts/bidding_zone=<value>"),
             SetupFieldDef("param.prediction.hours", "optional", "Vorschau-Horizont", False, "number", "h", None, 1, 192, ("prediction", "hours"), None, "/eos/set/param/prediction/hours=<value>"),
-            SetupFieldDef("param.prediction.historic_hours", "optional", "Prediction Historie", False, "number", "h", None, 1, 336, ("prediction", "historic_hours"), None, "/eos/set/param/prediction/historic_hours=<value>"),
+            SetupFieldDef("param.prediction.historic_hours", "optional", "Prediction Historie", False, "number", "h", None, 1, 840, ("prediction", "historic_hours"), None, "/eos/set/param/prediction/historic_hours=<value>"),
             *(
                 [
                     SetupFieldDef(

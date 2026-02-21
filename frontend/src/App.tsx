@@ -881,6 +881,10 @@ export default function App() {
     }
 
     const targetHours = selectedHorizonHours;
+    const historicTargetHours = Math.max(
+      targetHours,
+      Math.min(840, Math.max(336, targetHours * 7)),
+    );
     const updates: Array<{ field_id: string; value: unknown; source: "ui" }> = [];
     if (predictionHoursField !== null) {
       updates.push({
@@ -892,7 +896,7 @@ export default function App() {
     if (predictionHistoricHoursField !== null) {
       updates.push({
         field_id: PREDICTION_HISTORIC_HOURS_FIELD_ID,
-        value: targetHours,
+        value: historicTargetHours,
         source: "ui",
       });
     }
@@ -926,7 +930,9 @@ export default function App() {
         throw new Error(details);
       }
       await Promise.all([loadSetup(), loadRunCenter()]);
-      setRuntimeMessage(`Vorschau-Horizont auf ${targetHours}h gesetzt.`);
+      setRuntimeMessage(
+        `Vorschau-Horizont gesetzt: prediction=${targetHours}h, historic=${historicTargetHours}h.`,
+      );
       setGlobalError(null);
     } catch (error) {
       setGlobalError(error instanceof Error ? error.message : String(error));
