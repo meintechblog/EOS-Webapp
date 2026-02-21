@@ -138,6 +138,18 @@ def get_latest_artifact_for_run(
     return db.scalars(stmt.order_by(EosArtifact.created_at.desc(), EosArtifact.id.desc())).first()
 
 
+def get_latest_artifact(
+    db: Session,
+    *,
+    artifact_type: str,
+    artifact_key: str | None = None,
+) -> EosArtifact | None:
+    stmt = select(EosArtifact).where(EosArtifact.artifact_type == artifact_type)
+    if artifact_key is not None:
+        stmt = stmt.where(EosArtifact.artifact_key == artifact_key)
+    return db.scalars(stmt.order_by(EosArtifact.created_at.desc(), EosArtifact.id.desc())).first()
+
+
 def replace_prediction_points(
     db: Session,
     *,

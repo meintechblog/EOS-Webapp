@@ -14,6 +14,7 @@ from app.repositories.eos_runtime import (
     add_artifact,
     add_output_event,
     create_run,
+    get_latest_artifact,
     get_latest_successful_run_with_plan,
     get_run_by_eos_last_run_datetime,
     get_run_by_id,
@@ -1534,13 +1535,37 @@ class EosOrchestratorService:
         ems_payload["preis_euro_pro_wh_akku"] = _extract_battery_storage_cost_per_wh(
             self._eos_client.get_config()
         )
+        start_solution = self._load_latest_legacy_start_solution()
+        if start_solution is not None:
+            self._logger.info("legacy optimize warm-start reused start_solution_len=%s", len(start_solution))
 
         return {
             "ems": ems_payload,
             "pv_akku": None,
             "inverter": None,
             "eauto": None,
+            "start_solution": start_solution,
         }
+
+    def _load_latest_legacy_start_solution(self) -> list[float] | None:
+        try:
+            with self._session_factory() as db:
+                artifact = get_latest_artifact(
+                    db,
+                    artifact_type=self._LEGACY_RESPONSE_TYPE,
+                    artifact_key="optimize_response",
+                )
+        except Exception as exc:
+            self._logger.warning("failed to load legacy start_solution for warm-start: %s", exc)
+            return None
+        if artifact is None:
+            return None
+
+        payload = artifact.payload_json
+        if not isinstance(payload, dict):
+            return None
+
+        return _extract_legacy_start_solution(payload)
 
     def _set_runtime_mode_and_interval(self, *, mode: str, interval_seconds: int) -> dict[str, str]:
         config_payload = self._eos_client.get_config()
@@ -2010,6 +2035,22 @@ def _extract_battery_storage_cost_per_wh(config_payload: dict[str, Any]) -> floa
     if levelized_cost_kwh < 0:
         return 0.0
     return levelized_cost_kwh / 1000.0
+
+
+def _extract_legacy_start_solution(payload: dict[str, Any]) -> list[float] | None:
+    raw_solution = payload.get("start_solution")
+    if not isinstance(raw_solution, list):
+        return None
+    if len(raw_solution) < 2:
+        return None
+
+    normalized: list[float] = []
+    for raw_value in raw_solution:
+        value = _coerce_float(raw_value)
+        if value is None:
+            return None
+        normalized.append(value)
+    return normalized
 
 
 def _summarize_eos_error(exc: EosApiError) -> str:

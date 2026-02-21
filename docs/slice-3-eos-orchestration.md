@@ -74,3 +74,4 @@ Safety behavior:
   - First pulse EMS interval to `1`.
   - Wait for new `last_run_datetime`.
   - Optional legacy `/optimize` fallback if enabled and timeout is reached.
+  - Legacy fallback now reuses `start_solution` from the latest persisted legacy optimize response (`eos_artifacts`) as warm-start input for the next legacy call.

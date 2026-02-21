@@ -23,6 +23,7 @@ import {
   refreshEosPredictions,
   updateOutputTarget,
 } from "./api";
+import { OutputChartsPanel } from "./outputCharts";
 import type {
   EosPredictionRefreshScope,
   EosOutputCurrentItem,
@@ -981,6 +982,13 @@ export default function App() {
           <p className="pane-copy">
             Konkrete Ausführung aus EOS-Plan: aktive Entscheidungen, Zustandswechsel, HTTP-Dispatch und Plausibilitätschecks.
           </p>
+
+          <OutputChartsPanel
+            runId={selectedRunId}
+            timeline={outputTimeline}
+            current={outputCurrent}
+            events={outputEvents}
+          />
 
           <div className="panel">
             <div className="panel-head">

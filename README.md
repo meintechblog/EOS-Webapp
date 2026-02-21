@@ -9,9 +9,11 @@ The app runs in **HTTP-only setup + HTTP output dispatch mode**.
 - Left pane: `Inputs & Setup` (autosave, mandatory/optional/live, import/export)
 - Middle pane: `Run-Center` (runtime, force run, full run history)
 - Right pane: `Outputs` (active decisions, timeline, dispatch log, output targets, plausibility)
+- Right pane top includes a collapsible chart block for run decisions over time (mode timeline, factor timeline, dispatch status timeline)
 - Dynamic field updates use **`/eos/set/*`**
 - Output dispatch uses **HTTP webhooks** (scheduled + heartbeat + force)
 - MQTT dispatch path stays disabled in active runtime path
+- Legacy `POST /optimize` fallback reuses previous `start_solution` (warm-start) from persisted run artifacts when available
 
 ## UI Unit Contract (mandatory)
 

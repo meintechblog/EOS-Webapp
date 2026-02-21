@@ -74,6 +74,16 @@ Jeder Dispatch-Versuch landet in `output_dispatch_events`:
 - `GET /api/eos/runs/{id}/plausibility`
 - `GET/POST/PUT /api/eos/output-targets`
 
+## Output Charts (UI)
+
+The Outputs pane contains a collapsible chart section at the top. The charts are derived from existing runtime APIs and visualize run decisions with time context:
+
+- mode timeline per resource (`outputs/timeline`)
+- operation mode factor timeline per resource (`outputs/timeline` + `outputs/current`)
+- dispatch status stacked timeline (`outputs/events`)
+
+The layout is intentionally similar to EOSdash `Prediction` style: one shared time axis concept, split into focused charts.
+
 ## Schnelltest
 
 ```bash
