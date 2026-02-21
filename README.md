@@ -29,6 +29,7 @@ Details:
 
 - `docs/ui-unit-policy.md`
 - `docs/eos-price-prediction-quality.md`
+- `docs/eos-upstream-findings.md`
 - `AGENTS.md`
 
 Consistency check:
