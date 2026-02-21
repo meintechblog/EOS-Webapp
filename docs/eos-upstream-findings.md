@@ -2,6 +2,10 @@
 
 Purpose: Internal tracking for possible bugs in Akkudoktor-EOS before opening upstream issues/PRs.
 
+Issue draft templates (DE/EN) for all findings:
+
+- `docs/eos-upstream-issue-drafts.md`
+
 ## Status Legend
 
 - `candidate`: observed behavior, needs upstream confirmation.

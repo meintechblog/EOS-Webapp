@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     eos_aligned_scheduler_minutes: str = Field(default="0,15,30,45")
     eos_aligned_scheduler_delay_seconds: int = Field(default=1, ge=0, le=59)
     eos_aligned_scheduler_base_interval_seconds: int = Field(default=86400, ge=60, le=86400)
-    eos_force_run_timeout_seconds: int = Field(default=150, ge=10, le=1800)
+    eos_force_run_timeout_seconds: int = Field(default=240, ge=10, le=1800)
     eos_force_run_allow_legacy: bool = Field(default=True)
     eos_force_run_pre_refresh_enabled: bool = Field(default=True)
     eos_force_run_pre_refresh_scope: str = Field(default="all")
