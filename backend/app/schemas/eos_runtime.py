@@ -94,6 +94,20 @@ class EosRunSolutionResponse(BaseModel):
     payload_json: dict[str, Any] | list[Any] | None = None
 
 
+class EosRunPredictionSeriesPointResponse(BaseModel):
+    date_time: datetime
+    elec_price_ct_per_kwh: float | None = None
+    pv_ac_kw: float | None = None
+    pv_dc_kw: float | None = None
+    load_kw: float | None = None
+
+
+class EosRunPredictionSeriesResponse(BaseModel):
+    run_id: int
+    source: str
+    points: list[EosRunPredictionSeriesPointResponse] = Field(default_factory=list)
+
+
 class EosOutputCurrentItemResponse(BaseModel):
     run_id: int
     resource_id: str

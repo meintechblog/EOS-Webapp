@@ -162,6 +162,20 @@ export type EosRunContext = {
   created_at: string;
 };
 
+export type EosRunPredictionSeriesPoint = {
+  date_time: string;
+  elec_price_ct_per_kwh: number | null;
+  pv_ac_kw: number | null;
+  pv_dc_kw: number | null;
+  load_kw: number | null;
+};
+
+export type EosRunPredictionSeries = {
+  run_id: number;
+  source: string;
+  points: EosRunPredictionSeriesPoint[];
+};
+
 export type EosOutputCurrentItem = {
   run_id: number;
   resource_id: string;

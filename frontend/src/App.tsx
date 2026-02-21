@@ -8,6 +8,7 @@ import {
   getEosOutputsCurrent,
   getEosOutputsTimeline,
   getEosRunContext,
+  getEosRunPredictionSeries,
   getEosRunPlausibility,
   getEosRunDetail,
   getEosRunPlan,
@@ -31,6 +32,7 @@ import type {
   EosOutputTimelineItem,
   EosRunPlausibility,
   EosRunPlan,
+  EosRunPredictionSeries,
   EosRunDetail,
   EosRunSolution,
   EosRunSummary,
@@ -588,6 +590,7 @@ export default function App() {
   const [selectedRunDetail, setSelectedRunDetail] = useState<EosRunDetail | null>(null);
   const [plan, setPlan] = useState<EosRunPlan | null>(null);
   const [solution, setSolution] = useState<EosRunSolution | null>(null);
+  const [selectedRunPredictionSeries, setSelectedRunPredictionSeries] = useState<EosRunPredictionSeries | null>(null);
   const [outputCurrent, setOutputCurrent] = useState<EosOutputCurrentItem[]>([]);
   const [outputTimeline, setOutputTimeline] = useState<EosOutputTimelineItem[]>([]);
   const [outputEvents, setOutputEvents] = useState<OutputDispatchEvent[]>([]);
@@ -658,6 +661,7 @@ export default function App() {
       setSelectedRunDetail(null);
       setPlan(null);
       setSolution(null);
+      setSelectedRunPredictionSeries(null);
       setOutputCurrent([]);
       setOutputTimeline([]);
       setOutputEvents([]);
@@ -674,7 +678,7 @@ export default function App() {
   }, []);
 
   const loadRunDetails = useCallback(async (runId: number) => {
-    const [detailData, planData, solutionData, currentData, timelineData, eventsData, plausibilityData] = await Promise.all([
+    const [detailData, planData, solutionData, currentData, timelineData, eventsData, plausibilityData, predictionSeriesData] = await Promise.all([
       getEosRunDetail(runId),
       getEosRunPlan(runId),
       getEosRunSolution(runId),
@@ -682,10 +686,12 @@ export default function App() {
       getEosOutputsTimeline({ runId }),
       getEosOutputEvents({ runId, limit: 200 }),
       getEosRunPlausibility(runId),
+      getEosRunPredictionSeries(runId).catch(() => null),
     ]);
     setSelectedRunDetail(detailData);
     setPlan(planData);
     setSolution(solutionData);
+    setSelectedRunPredictionSeries(predictionSeriesData);
     setOutputCurrent(currentData);
     setOutputTimeline(timelineData);
     setOutputEvents(eventsData);
@@ -1501,12 +1507,36 @@ export default function App() {
           </div>
 
           <div className="panel">
-            <h3>Run-Typen</h3>
+            <div className="panel-head">
+              <h3>Run-Steuerung & Runtime</h3>
+              <button
+                type="button"
+                onClick={triggerForceRun}
+                disabled={isForcingRun || isRefreshingPrediction !== null}
+              >
+                {isForcingRun ? "läuft..." : "Force Run"}
+              </button>
+            </div>
+            {runtimeMessage ? <p className="meta-text">{runtimeMessage}</p> : null}
+            <p className="meta-text">
+              `Prediction Refresh` aktualisiert nur Prognosen, `Force Run` startet sofort einen vollständigen Optimierungslauf,
+              `Auto`-Runs kommen vom EOS-Scheduler.
+            </p>
+            <div className="chip-row">
+              <span className={`chip ${runtime?.health_ok ? "chip-ok" : "chip-danger"}`}>
+                EOS: {runtime?.health_ok ? "ok" : "offline"}
+              </span>
+              <span className={`chip ${runtime?.collector.running ? "chip-ok" : "chip-warning"}`}>
+                Collector: {runtime?.collector.running ? "running" : "stopped"}
+              </span>
+              <span className={`chip ${runtime?.collector.aligned_scheduler_enabled ? "chip-ok" : "chip-neutral"}`}>
+                Scheduler: {runtime?.collector.aligned_scheduler_enabled ? "aktiv" : "aus"}
+              </span>
+            </div>
             <ul className="plain-list">
-              <li><strong>Auto</strong>: EOS-intern ausgelöster Lauf (erkannt über neues `last_run_datetime`).</li>
-              <li><strong>Prediction</strong>: aktualisiert nur Vorhersagen (PV/Preis/Load), ohne Plan/Solution.</li>
-              <li><strong>Force</strong>: zentraler Optimierungslauf über `pulse_then_legacy`.</li>
-              <li><strong>Status</strong>: `success` (vollständig), `partial` (Teilresultat), `failed` (abgebrochen).</li>
+              <li>Letzter EOS-Run: <strong>{formatTimestamp(runtime?.collector.last_observed_eos_run_datetime ?? null)}</strong></li>
+              <li>Letzter erfolgreicher Sync: <strong>{formatTimestamp(runtime?.collector.last_successful_sync_ts ?? null)}</strong></li>
+              <li>Status-Logik: <strong>`success` vollstandig | `partial` teilw. Ergebnis | `failed` abgebrochen</strong></li>
             </ul>
             <div className="actions-row wrap">
               <button
@@ -1534,33 +1564,17 @@ export default function App() {
                 {isRefreshingPrediction === "all" ? "Prediction refresh..." : "Prediction All Refresh"}
               </button>
             </div>
-          </div>
-
-          <div className="panel">
-            <div className="panel-head">
-              <h3>EOS Runtime</h3>
-              <button
-                type="button"
-                onClick={triggerForceRun}
-                disabled={isForcingRun || isRefreshingPrediction !== null}
-              >
-                {isForcingRun ? "läuft..." : "Force Run"}
-              </button>
-            </div>
-            {runtimeMessage ? <p className="meta-text">{runtimeMessage}</p> : null}
-            <ul className="plain-list">
-              <li>EOS Base URL: <code>{runtime?.eos_base_url ?? "-"}</code></li>
-              <li>Health: <strong>{runtime?.health_ok ? "ok" : "offline"}</strong></li>
-              <li>Collector: <strong>{runtime?.collector.running ? "running" : "stopped"}</strong></li>
-              <li>Letzter EOS-Run: <strong>{formatTimestamp(runtime?.collector.last_observed_eos_run_datetime ?? null)}</strong></li>
-              <li>Last Poll: <strong>{formatTimestamp(runtime?.collector.last_poll_ts ?? null)}</strong></li>
-              <li>Last Sync: <strong>{formatTimestamp(runtime?.collector.last_successful_sync_ts ?? null)}</strong></li>
-              <li>Aligned Scheduler: <strong>{runtime?.collector.aligned_scheduler_enabled ? "aktiv" : "aus"}</strong></li>
-              <li>Aligned Slots: <strong>{runtime?.collector.aligned_scheduler_minutes || "-"}</strong> (+{runtime?.collector.aligned_scheduler_delay_seconds ?? 0}s)</li>
-              <li>Nächster geplanter Slot: <strong>{formatTimestamp(runtime?.collector.aligned_scheduler_next_due_ts ?? null)}</strong></li>
-              <li>Letzter Scheduler-Trigger: <strong>{formatTimestamp(runtime?.collector.aligned_scheduler_last_trigger_ts ?? null)}</strong></li>
-              <li>Letzter Scheduler-Skip: <strong>{runtime?.collector.aligned_scheduler_last_skip_reason ?? "-"}</strong></li>
-            </ul>
+            <details>
+              <summary>Technische Runtime-Details</summary>
+              <ul className="plain-list">
+                <li>EOS Base URL: <code>{runtime?.eos_base_url ?? "-"}</code></li>
+                <li>Last Poll: <strong>{formatTimestamp(runtime?.collector.last_poll_ts ?? null)}</strong></li>
+                <li>Aligned Slots: <strong>{runtime?.collector.aligned_scheduler_minutes || "-"}</strong> (+{runtime?.collector.aligned_scheduler_delay_seconds ?? 0}s)</li>
+                <li>Nächster geplanter Slot: <strong>{formatTimestamp(runtime?.collector.aligned_scheduler_next_due_ts ?? null)}</strong></li>
+                <li>Letzter Scheduler-Trigger: <strong>{formatTimestamp(runtime?.collector.aligned_scheduler_last_trigger_ts ?? null)}</strong></li>
+                <li>Letzter Scheduler-Skip: <strong>{runtime?.collector.aligned_scheduler_last_skip_reason ?? "-"}</strong></li>
+              </ul>
+            </details>
           </div>
 
           <div className="panel">
@@ -1682,6 +1696,7 @@ export default function App() {
             timeline={visibleOutputTimeline}
             current={visibleOutputCurrent}
             solutionPayload={solution?.payload_json ?? null}
+            predictionSeries={selectedRunPredictionSeries}
           />
 
           <div className="panel">

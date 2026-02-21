@@ -8,6 +8,7 @@ import type {
   EosRunDetail,
   EosRunPlan,
   EosRunContext,
+  EosRunPredictionSeries,
   EosRunSolution,
   EosRunSummary,
   EosRuntime,
@@ -138,6 +139,10 @@ export function getEosRunSolution(runId: number): Promise<EosRunSolution> {
 
 export function getEosRunContext(runId: number): Promise<EosRunContext> {
   return apiRequest<EosRunContext>(`/api/eos/runs/${runId}/context`);
+}
+
+export function getEosRunPredictionSeries(runId: number): Promise<EosRunPredictionSeries> {
+  return apiRequest<EosRunPredictionSeries>(`/api/eos/runs/${runId}/prediction-series`);
 }
 
 export function getEosOutputsCurrent(runId?: number): Promise<EosOutputCurrentItem[]> {

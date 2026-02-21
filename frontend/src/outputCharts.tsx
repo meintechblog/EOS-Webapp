@@ -1,12 +1,13 @@
 import { useMemo } from "react";
 
-import type { EosOutputCurrentItem, EosOutputTimelineItem } from "./types";
+import type { EosOutputCurrentItem, EosOutputTimelineItem, EosRunPredictionSeries } from "./types";
 
 type OutputChartsPanelProps = {
   runId: number | null;
   timeline: EosOutputTimelineItem[];
   current: EosOutputCurrentItem[];
   solutionPayload: unknown | null;
+  predictionSeries: EosRunPredictionSeries | null;
 };
 
 type TimelinePoint = {
@@ -533,8 +534,32 @@ function parsePredictionPoints(solutionPayload: unknown): PredictionPoint[] {
   return points;
 }
 
-function buildPredictionModel(solutionPayload: unknown): PredictionChartModel {
-  const points = parsePredictionPoints(solutionPayload);
+function parseArtifactPredictionPoints(predictionSeries: EosRunPredictionSeries | null): PredictionPoint[] {
+  if (!predictionSeries || !Array.isArray(predictionSeries.points)) {
+    return [];
+  }
+
+  const points: PredictionPoint[] = [];
+  for (const item of predictionSeries.points) {
+    const tsMs = toTimestampMs(item.date_time);
+    if (tsMs === null) {
+      continue;
+    }
+    points.push({
+      tsMs,
+      priceCtPerKwh: toFiniteNumber(item.elec_price_ct_per_kwh),
+      pvAcKw: toFiniteNumber(item.pv_ac_kw),
+      pvDcKw: toFiniteNumber(item.pv_dc_kw),
+      loadKw: toFiniteNumber(item.load_kw),
+    });
+  }
+  points.sort((left, right) => left.tsMs - right.tsMs);
+  return points;
+}
+
+function buildPredictionModel(solutionPayload: unknown, predictionSeries: EosRunPredictionSeries | null): PredictionChartModel {
+  const artifactPoints = parseArtifactPredictionPoints(predictionSeries);
+  const points = artifactPoints.length > 0 ? artifactPoints : parsePredictionPoints(solutionPayload);
   if (points.length === 0) {
     const nowMs = Date.now();
     return {
@@ -559,7 +584,7 @@ function buildPredictionModel(solutionPayload: unknown): PredictionChartModel {
     .filter((diff) => diff > 0 && diff <= 1000 * 60 * 60 * 12);
   const medianStepMs = median(diffs) ?? 1000 * 60 * 60;
   const intervalMinutes = Math.max(1, medianStepMs / (1000 * 60));
-  const horizonHours = Math.max(0, (lastTs - firstTs + medianStepMs) / (1000 * 60 * 60));
+  const horizonHours = Math.max(0, (points.length * medianStepMs) / (1000 * 60 * 60));
   const knownPriceHours = Math.max(24, Math.min(48, Math.round(horizonHours * 0.5)));
   const pointsPerKnownPrice = Math.max(
     1,
@@ -1051,9 +1076,12 @@ function LoadForecastChart({ model }: { model: PredictionChartModel }) {
   );
 }
 
-export function OutputChartsPanel({ runId, timeline, current, solutionPayload }: OutputChartsPanelProps) {
+export function OutputChartsPanel({ runId, timeline, current, solutionPayload, predictionSeries }: OutputChartsPanelProps) {
   const model = useMemo(() => buildChartModel(timeline, current), [timeline, current]);
-  const predictionModel = useMemo(() => buildPredictionModel(solutionPayload), [solutionPayload]);
+  const predictionModel = useMemo(
+    () => buildPredictionModel(solutionPayload, predictionSeries),
+    [solutionPayload, predictionSeries],
+  );
   const hasAnyData = model.hasAnyData || predictionModel.hasPrice || predictionModel.hasPv || predictionModel.hasLoad;
 
   return (

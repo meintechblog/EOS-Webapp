@@ -1,5 +1,5 @@
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -47,6 +47,8 @@ from app.schemas.eos_runtime import (
     EosRunContextResponse,
     EosRunDetailResponse,
     EosRunPlanResponse,
+    EosRunPredictionSeriesPointResponse,
+    EosRunPredictionSeriesResponse,
     EosRunSolutionResponse,
     EosRunSummaryResponse,
     EosRuntimeConfigUpdateRequest,
@@ -214,6 +216,89 @@ def get_run_solution(
         artifact_key=None,
     )
     return EosRunSolutionResponse(run_id=run_id, payload_json=artifact.payload_json if artifact else None)
+
+
+@router.get("/runs/{run_id}/prediction-series", response_model=EosRunPredictionSeriesResponse)
+def get_run_prediction_series(
+    run_id: int,
+    db: Session = Depends(get_db),
+) -> EosRunPredictionSeriesResponse:
+    run = get_run_by_id(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+
+    def _artifact_values(key: str) -> list[Any] | None:
+        artifact = get_latest_artifact_for_run(
+            db,
+            run_id=run_id,
+            artifact_type="prediction_series",
+            artifact_key=key,
+        )
+        if artifact is None:
+            return None
+        payload = artifact.payload_json
+        if isinstance(payload, dict):
+            values = payload.get("values")
+            if isinstance(values, list):
+                return values
+            return None
+        if isinstance(payload, list):
+            return payload
+        return None
+
+    date_values = _artifact_values("date_time")
+    if not date_values:
+        return EosRunPredictionSeriesResponse(run_id=run_id, source="none", points=[])
+
+    def _pick_series(keys: list[str]) -> list[Any] | None:
+        for key in keys:
+            values = _artifact_values(key)
+            if values is not None:
+                return values
+        return None
+
+    price_kwh_values = _pick_series(["elecprice_marketprice_kwh", "elec_price_amt_kwh"])
+    price_wh_values = _pick_series(["elecprice_marketprice_wh", "strompreis_euro_pro_wh"])
+    pv_ac_power_values = _pick_series(["pvforecast_ac_power"])
+    pv_dc_power_values = _pick_series(["pvforecast_dc_power"])
+    load_power_values = _pick_series(
+        [
+            "loadforecast_power_w",
+            "load_mean_adjusted",
+            "load_mean",
+            "loadakkudoktor_mean_power_w",
+        ]
+    )
+
+    points: list[EosRunPredictionSeriesPointResponse] = []
+    for index, raw_ts in enumerate(date_values):
+        date_time = _coerce_prediction_series_datetime(raw_ts)
+        if date_time is None:
+            continue
+
+        price_ct_per_kwh = _coerce_series_value(price_kwh_values, index, factor=100.0)
+        if price_ct_per_kwh is None:
+            price_ct_per_kwh = _coerce_series_value(price_wh_values, index, factor=100000.0)
+
+        pv_ac_kw = _coerce_series_value(pv_ac_power_values, index, factor=0.001)
+        pv_dc_kw = _coerce_series_value(pv_dc_power_values, index, factor=0.001)
+        load_kw = _coerce_series_value(load_power_values, index, factor=0.001)
+
+        points.append(
+            EosRunPredictionSeriesPointResponse(
+                date_time=date_time,
+                elec_price_ct_per_kwh=price_ct_per_kwh,
+                pv_ac_kw=pv_ac_kw,
+                pv_dc_kw=pv_dc_kw,
+                load_kw=load_kw,
+            )
+        )
+
+    return EosRunPredictionSeriesResponse(
+        run_id=run_id,
+        source="artifact_prediction_series",
+        points=points,
+    )
 
 
 @router.get("/outputs/current", response_model=list[EosOutputCurrentItemResponse])
@@ -644,4 +729,85 @@ def _coerce_float(value: Any) -> float | None:
     try:
         return float(value)
     except (TypeError, ValueError):
+        return None
+
+
+def _coerce_series_value(values: list[Any] | None, index: int, *, factor: float = 1.0) -> float | None:
+    if values is None or index < 0 or index >= len(values):
+        return None
+    raw = _coerce_float(values[index])
+    if raw is None:
+        return None
+    return raw * factor
+
+
+def _coerce_prediction_series_datetime(value: Any) -> datetime | None:
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw == "":
+            return None
+        if raw.lstrip("-").isdigit():
+            try:
+                numeric_int = int(raw)
+            except ValueError:
+                numeric_int = None
+            if numeric_int is not None:
+                return _timestamp_to_datetime_utc(numeric_int)
+
+        numeric_float = _coerce_float(raw)
+        if numeric_float is not None:
+            return _timestamp_to_datetime_utc(numeric_float)
+        candidate = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    if isinstance(value, int):
+        return _timestamp_to_datetime_utc(value)
+
+    numeric_float = _coerce_float(value)
+    if numeric_float is None:
+        return None
+    return _timestamp_to_datetime_utc(numeric_float)
+
+
+def _timestamp_to_datetime_utc(value: int | float) -> datetime | None:
+    try:
+        if isinstance(value, int):
+            absolute = abs(value)
+            if absolute >= 10**18:
+                seconds = value // 1_000_000_000
+                nanos = value % 1_000_000_000
+                if nanos < 0:
+                    nanos += 1_000_000_000
+                    seconds -= 1
+                return datetime.fromtimestamp(seconds, tz=timezone.utc) + timedelta(
+                    microseconds=round(nanos / 1000)
+                )
+            if absolute >= 10**15:
+                seconds = value // 1_000_000
+                micros = value % 1_000_000
+                if micros < 0:
+                    micros += 1_000_000
+                    seconds -= 1
+                return datetime.fromtimestamp(seconds, tz=timezone.utc) + timedelta(microseconds=micros)
+            if absolute >= 10**12:
+                return datetime.fromtimestamp(value / 1_000.0, tz=timezone.utc)
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+
+        absolute = abs(value)
+        if absolute >= 1e18:
+            seconds = value / 1e9
+        elif absolute >= 1e15:
+            seconds = value / 1e6
+        elif absolute >= 1e12:
+            seconds = value / 1e3
+        else:
+            seconds = value
+        return datetime.fromtimestamp(seconds, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
         return None
