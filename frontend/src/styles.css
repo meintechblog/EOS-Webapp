@@ -344,6 +344,20 @@ textarea:focus {
   background: rgba(18, 86, 67, 0.45);
 }
 
+.run-item-main {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.run-item-metric {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .run-item-duration {
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);

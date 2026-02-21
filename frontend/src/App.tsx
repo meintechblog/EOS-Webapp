@@ -48,6 +48,14 @@ type DraftState = {
   error: string | null;
 };
 
+type RunPredictionMetrics = {
+  horizonHours: number | null;
+  pointCount: number;
+  intervalMinutes: number | null;
+  minPriceCt: number | null;
+  maxPriceCt: number | null;
+};
+
 const AUTOSAVE_MS = 1500;
 const PREDICTION_HOURS_FIELD_ID = "param.prediction.hours";
 const PREDICTION_HISTORIC_HOURS_FIELD_ID = "param.prediction.historic_hours";
@@ -128,6 +136,156 @@ function toFiniteNumber(value: unknown): number | null {
     }
   }
   return null;
+}
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function toTimestampMs(value: unknown): number | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function median(numbers: number[]): number | null {
+  if (numbers.length === 0) {
+    return null;
+  }
+  const sorted = [...numbers].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+  return sorted[middle];
+}
+
+function extractRunPredictionMetrics(solutionPayload: unknown): RunPredictionMetrics | null {
+  const payload = asObject(solutionPayload);
+  const prediction = asObject(payload?.prediction);
+  const data = prediction?.data;
+  const rows: Array<{ tsMs: number; priceCt: number | null }> = [];
+
+  if (Array.isArray(data)) {
+    for (const item of data) {
+      const row = asObject(item);
+      if (!row) {
+        continue;
+      }
+      const tsMs = toTimestampMs(row.date_time);
+      if (tsMs === null) {
+        continue;
+      }
+      const priceCt = (() => {
+        const directCt = toFiniteNumber(row.elec_price_ct_per_kwh ?? row.electricity_price_ct_per_kwh);
+        if (directCt !== null) {
+          return directCt;
+        }
+        const eurPerKwh = toFiniteNumber(row.elec_price_amt_kwh ?? row.elecprice_marketprice_kwh);
+        if (eurPerKwh !== null) {
+          return eurPerKwh * 100;
+        }
+        const eurPerWh = toFiniteNumber(row.elecprice_marketprice_wh);
+        if (eurPerWh !== null) {
+          return eurPerWh * 100000;
+        }
+        return null;
+      })();
+      rows.push({ tsMs, priceCt });
+    }
+  } else {
+    const objectData = asObject(data);
+    if (!objectData) {
+      return null;
+    }
+    for (const [key, value] of Object.entries(objectData)) {
+      const row = asObject(value);
+      if (!row) {
+        continue;
+      }
+      const tsMs = toTimestampMs(row.date_time ?? key);
+      if (tsMs === null) {
+        continue;
+      }
+      const priceCt = (() => {
+        const directCt = toFiniteNumber(row.elec_price_ct_per_kwh ?? row.electricity_price_ct_per_kwh);
+        if (directCt !== null) {
+          return directCt;
+        }
+        const eurPerKwh = toFiniteNumber(row.elec_price_amt_kwh ?? row.elecprice_marketprice_kwh);
+        if (eurPerKwh !== null) {
+          return eurPerKwh * 100;
+        }
+        const eurPerWh = toFiniteNumber(row.elecprice_marketprice_wh);
+        if (eurPerWh !== null) {
+          return eurPerWh * 100000;
+        }
+        return null;
+      })();
+      rows.push({ tsMs, priceCt });
+    }
+  }
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  rows.sort((left, right) => left.tsMs - right.tsMs);
+  const intervalsMs = rows
+    .slice(1)
+    .map((row, index) => row.tsMs - rows[index].tsMs)
+    .filter((value) => value > 0 && value <= 1000 * 60 * 60 * 12);
+  const medianIntervalMs = median(intervalsMs);
+  const intervalMinutes =
+    medianIntervalMs !== null && Number.isFinite(medianIntervalMs) && medianIntervalMs > 0
+      ? medianIntervalMs / (1000 * 60)
+      : null;
+  const horizonHours =
+    medianIntervalMs !== null
+      ? (rows[rows.length - 1].tsMs - rows[0].tsMs + medianIntervalMs) / (1000 * 60 * 60)
+      : null;
+  const pricedRows = rows
+    .map((row) => row.priceCt)
+    .filter((value): value is number => value !== null && Number.isFinite(value));
+
+  return {
+    horizonHours,
+    pointCount: rows.length,
+    intervalMinutes,
+    minPriceCt: pricedRows.length > 0 ? Math.min(...pricedRows) : null,
+    maxPriceCt: pricedRows.length > 0 ? Math.max(...pricedRows) : null,
+  };
+}
+
+function formatRunMetricsLabel(
+  run: EosRunSummary,
+  metrics: RunPredictionMetrics | null | undefined,
+  fallbackHorizonHours: number,
+): string {
+  if (run.trigger_source === "prediction_refresh") {
+    return "Prediction-Refresh (ohne Solution-Fahrplan)";
+  }
+  if (metrics === undefined) {
+    return "Kennzahlen werden geladen...";
+  }
+  if (metrics === null) {
+    return `Ziel-Horizont ${fallbackHorizonHours}h`;
+  }
+
+  const parts: string[] = [];
+  if (metrics.horizonHours !== null) {
+    parts.push(`Horizont ${metrics.horizonHours.toFixed(1)}h`);
+  }
+  parts.push(`${metrics.pointCount} Punkte`);
+  if (metrics.minPriceCt !== null && metrics.maxPriceCt !== null) {
+    parts.push(`${metrics.minPriceCt.toFixed(2)}-${metrics.maxPriceCt.toFixed(2)} ct/kWh`);
+  }
+  return parts.join(" | ");
 }
 
 function runStatusChipClass(statusValue: string): string {
@@ -382,11 +540,13 @@ export default function App() {
   const [runNowMs, setRunNowMs] = useState<number>(() => Date.now());
   const [runSourceFilter, setRunSourceFilter] = useState<"all" | "automatic" | "force_run" | "prediction_refresh">("all");
   const [runStatusFilter, setRunStatusFilter] = useState<"all" | "running" | "success" | "partial" | "failed">("all");
+  const [runMetricsById, setRunMetricsById] = useState<Record<number, RunPredictionMetrics | null>>({});
 
   const [drafts, setDrafts] = useState<Record<string, DraftState>>({});
   const draftsRef = useRef(drafts);
   const fieldsRef = useRef(fields);
   const timersRef = useRef<Record<string, number>>({});
+  const runMetricsLoadingRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     draftsRef.current = drafts;
@@ -881,9 +1041,13 @@ export default function App() {
     }
 
     const targetHours = selectedHorizonHours;
+    const historicBaselineHours = Math.max(
+      840,
+      Math.round(currentPredictionHistoricHours ?? 0),
+    );
     const historicTargetHours = Math.max(
       targetHours,
-      Math.min(840, Math.max(336, targetHours * 7)),
+      Math.min(2160, Math.max(historicBaselineHours, targetHours * 10)),
     );
     const updates: Array<{ field_id: string; value: unknown; source: "ui" }> = [];
     if (predictionHoursField !== null) {
@@ -945,6 +1109,7 @@ export default function App() {
     optimizationHorizonHoursField,
     optimizationHoursField,
     predictionHoursField,
+    currentPredictionHistoricHours,
     predictionHistoricHoursField,
     selectedHorizonHours,
   ]);
@@ -972,6 +1137,59 @@ export default function App() {
       return true;
     });
   }, [runs, runSourceFilter, runStatusFilter]);
+
+  const runMetricCandidateIds = useMemo(
+    () => filteredRuns.slice(0, 40).map((run) => run.id),
+    [filteredRuns],
+  );
+
+  useEffect(() => {
+    const missingIds = runMetricCandidateIds.filter(
+      (runId) =>
+        runMetricsById[runId] === undefined &&
+        !runMetricsLoadingRef.current.has(runId),
+    );
+    if (missingIds.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    for (const runId of missingIds) {
+      runMetricsLoadingRef.current.add(runId);
+    }
+
+    void (async () => {
+      const loaded = await Promise.all(
+        missingIds.map(async (runId) => {
+          try {
+            const solutionData = await getEosRunSolution(runId);
+            return [runId, extractRunPredictionMetrics(solutionData.payload_json)] as const;
+          } catch {
+            return [runId, null] as const;
+          }
+        }),
+      );
+      if (!cancelled) {
+        setRunMetricsById((current) => {
+          const next: Record<number, RunPredictionMetrics | null> = { ...current };
+          for (const [runId, metrics] of loaded) {
+            next[runId] = metrics;
+          }
+          return next;
+        });
+      }
+      for (const runId of missingIds) {
+        runMetricsLoadingRef.current.delete(runId);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      for (const runId of missingIds) {
+        runMetricsLoadingRef.current.delete(runId);
+      }
+    };
+  }, [runMetricCandidateIds, runMetricsById]);
 
   const runHints = useMemo(
     () => buildRunHints(selectedRunDetail, plan, solution),
@@ -1178,7 +1396,7 @@ export default function App() {
             <p className="meta-text">
               Setzt `prediction.hours` und {predictionHistoricHoursField ? "`prediction.historic_hours`" : "optional die Historie"}
               {hasOptimizationHorizonControl ? ", plus Optimierungs-Horizont" : ""}
-              {" "}fur nachfolgende Runs.
+              {" "}fur nachfolgende Runs. Historic wird adaptiv mit Mindestziel `840h` gesetzt.
             </p>
             {currentPredictionHistoricHours !== null ? (
               <p className="meta-text">Aktuelle Prediction-Historie: {Math.max(1, Math.round(currentPredictionHistoricHours))}h</p>
@@ -1291,20 +1509,27 @@ export default function App() {
             </div>
             <div className="run-list">
               {filteredRuns.length === 0 ? <p>Keine Runs für den aktiven Filter.</p> : null}
-              {filteredRuns.map((run) => (
-                <button
-                  key={run.id}
-                  type="button"
-                  className={`run-item${selectedRunId === run.id ? " run-item-active" : ""}${run.status === "running" ? " run-item-running" : ""}`}
-                  onClick={() => setSelectedRunId(run.id)}
-                >
-                  <span>#{run.id}</span>
-                  <span>{runSourceLabel(run.trigger_source)}</span>
-                  <span className={`chip ${runStatusChipClass(run.status)}`}>{run.status}</span>
-                  <span>{formatTimestamp(run.started_at)}</span>
-                  <span className="run-item-duration">{formatDuration(run.started_at, run.finished_at, runNowMs)}</span>
-                </button>
-              ))}
+              {filteredRuns.map((run) => {
+                const metrics = runMetricsById[run.id];
+                const metricLabel = formatRunMetricsLabel(run, metrics, baseHorizonHours);
+                return (
+                  <button
+                    key={run.id}
+                    type="button"
+                    className={`run-item${selectedRunId === run.id ? " run-item-active" : ""}${run.status === "running" ? " run-item-running" : ""}`}
+                    onClick={() => setSelectedRunId(run.id)}
+                  >
+                    <span>#{run.id}</span>
+                    <span>{runSourceLabel(run.trigger_source)}</span>
+                    <span className={`chip ${runStatusChipClass(run.status)}`}>{run.status}</span>
+                    <span className="run-item-main">
+                      <span>{formatTimestamp(run.started_at)}</span>
+                      <span className="run-item-metric">{metricLabel}</span>
+                    </span>
+                    <span className="run-item-duration">{formatDuration(run.started_at, run.finished_at, runNowMs)}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 

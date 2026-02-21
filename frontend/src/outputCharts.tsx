@@ -59,6 +59,9 @@ type PredictionChartModel = {
   windowStartMs: number;
   windowEndMs: number;
   priceSplitIndex: number;
+  knownPriceHours: number;
+  intervalMinutes: number;
+  horizonHours: number;
   hasPrice: boolean;
   hasPv: boolean;
 };
@@ -498,6 +501,9 @@ function buildPredictionModel(solutionPayload: unknown): PredictionChartModel {
       windowStartMs: nowMs - 1000 * 60 * 60,
       windowEndMs: nowMs + 1000 * 60 * 60 * 8,
       priceSplitIndex: 0,
+      knownPriceHours: 24,
+      intervalMinutes: 60,
+      horizonHours: 0,
       hasPrice: false,
       hasPv: false,
     };
@@ -510,14 +516,23 @@ function buildPredictionModel(solutionPayload: unknown): PredictionChartModel {
     .map((point, index) => point.tsMs - points[index].tsMs)
     .filter((diff) => diff > 0 && diff <= 1000 * 60 * 60 * 12);
   const medianStepMs = median(diffs) ?? 1000 * 60 * 60;
-  const pointsPer24h = Math.max(1, Math.round((24 * 60 * 60 * 1000) / medianStepMs));
-  const priceSplitIndex = Math.min(points.length, pointsPer24h);
+  const intervalMinutes = Math.max(1, medianStepMs / (1000 * 60));
+  const horizonHours = Math.max(0, (lastTs - firstTs + medianStepMs) / (1000 * 60 * 60));
+  const knownPriceHours = Math.max(24, Math.min(48, Math.round(horizonHours * 0.5)));
+  const pointsPerKnownPrice = Math.max(
+    1,
+    Math.round((knownPriceHours * 60 * 60 * 1000) / medianStepMs),
+  );
+  const priceSplitIndex = Math.min(points.length, pointsPerKnownPrice);
 
   return {
     points,
     windowStartMs: firstTs,
     windowEndMs: Math.max(firstTs + 1000 * 60 * 30, lastTs),
     priceSplitIndex,
+    knownPriceHours,
+    intervalMinutes,
+    horizonHours,
     hasPrice: points.some((point) => point.priceCtPerKwh !== null),
     hasPv: points.some((point) => point.pvAcKw !== null || point.pvDcKw !== null),
   };
@@ -769,7 +784,8 @@ function PriceTimelineChart({ model }: { model: PredictionChartModel }) {
     <section className="output-chart-card">
       <h4>Strompreis-Verlauf (ct/kWh)</h4>
       <p className="meta-text">
-        Farbtrennung: naher eingelesener Zukunftshorizont vs. weiterfuhrende Prognose (aktuell erste 24h als eingelesen).
+        Farbtrennung: naher eingelesener Zukunftshorizont ({model.knownPriceHours}h) vs. weiterfuhrende Prognose.
+        Gesamtfenster: {model.horizonHours.toFixed(1)}h bei {model.intervalMinutes.toFixed(0)}-min Auflosung.
       </p>
       <svg viewBox={`0 0 ${width} ${height}`} className="output-chart-svg" role="img" aria-label="Electricity price chart">
         {yTicks.map((tick) => {
@@ -927,6 +943,7 @@ export function OutputChartsPanel({ runId, timeline, current, solutionPayload }:
         <summary>
           <strong>Charts: Entscheidungen mit Zeitbezug</strong>
           {runId !== null ? ` | Run #${runId}` : ""}
+          {predictionModel.points.length > 0 ? ` | Prediction-Horizont ${predictionModel.horizonHours.toFixed(1)}h` : ""}
         </summary>
         <p className="meta-text">
           Visualisierung orientiert sich am EOSdash-Prinzip aus dem Prediction-Tab: Zeitachse + getrennte Fachcharts statt einer einzigen uberladenen Grafik.

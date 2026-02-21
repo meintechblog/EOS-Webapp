@@ -12,7 +12,7 @@ This note documents practical levers to improve electricity-price prediction qua
 2. Set enough forecast/history horizon.
    - `prediction.hours` controls future horizon.
    - `prediction.historic_hours` controls how much history is retained for model fitting.
-   - EOS docs recommend raising history to around `840h` for better quality.
+   - For EOS price models, `>= 840h` is a practical quality threshold (weekly ETS path needs `> 800` records).
 3. Keep provider settings correct.
    - For EnergyCharts, ensure correct `elecprice.energycharts.bidding_zone`.
    - `elecprice.charges_kwh` and `elecprice.vat_rate` are applied on top of market prices.
@@ -26,15 +26,17 @@ This note documents practical levers to improve electricity-price prediction qua
   - `> 800` datasets: weekly seasonality (168h)
   - `> 168` datasets: daily seasonality (24h)
   - otherwise median fallback
+- `prediction.historic_hours` has no strict EOS max in config (`ge=0`); practical gains above ~840h depend on available retained provider records and runtime cost.
 
 ## EOS-Webapp Behavior
 
 - Run-Center now exposes a prominent horizon dropdown.
 - On apply, Webapp updates:
   - `prediction.hours`
-  - `prediction.historic_hours`
+  - `prediction.historic_hours` (adaptive, with minimum target `840h`)
   - and, when available in payload, `optimization.horizon_hours` or legacy `optimization.hours`
 - Run-Historie shows live runtime for running jobs and final runtime for finished jobs.
+- Run-Historie entries include per-run prediction metrics (derived horizon, point count, price range when available).
 
 ## Sources
 
