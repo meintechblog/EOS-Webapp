@@ -590,6 +590,48 @@ class SetupFieldService:
             SetupFieldDef("param.elecprice.charges_kwh", "optional", "Strompreis Zuschlag", False, "number", "ct/kWh", None, 0, None, ("elecprice", "charges_kwh"), None, "/eos/set/param/elecprice/charges_ct_per_kwh=<value>"),
             SetupFieldDef("param.elecprice.vat_rate", "optional", "MwSt Faktor", False, "number", "x", None, 0, None, ("elecprice", "vat_rate"), None, "/eos/set/param/elecprice/vat_rate=<value>"),
             SetupFieldDef("param.elecprice.energycharts.bidding_zone", "optional", "EnergyCharts Zone", False, "select", None, "elecprice.energycharts.bidding_zone", None, None, ("elecprice", "energycharts", "bidding_zone"), None, "/eos/set/param/elecprice/energycharts/bidding_zone=<value>"),
+            SetupFieldDef("param.prediction.hours", "optional", "Vorschau-Horizont", False, "number", "h", None, 1, 192, ("prediction", "hours"), None, "/eos/set/param/prediction/hours=<value>"),
+            SetupFieldDef("param.prediction.historic_hours", "optional", "Prediction Historie", False, "number", "h", None, 1, 336, ("prediction", "historic_hours"), None, "/eos/set/param/prediction/historic_hours=<value>"),
+            *(
+                [
+                    SetupFieldDef(
+                        "param.optimization.horizon_hours",
+                        "optional",
+                        "Optimierungs-Horizont",
+                        False,
+                        "number",
+                        "h",
+                        None,
+                        1,
+                        192,
+                        ("optimization", "horizon_hours"),
+                        None,
+                        "/eos/set/param/optimization/horizon_hours=<value>",
+                    )
+                ]
+                if _payload_has_path(payload, ("optimization", "horizon_hours"))
+                else []
+            ),
+            *(
+                [
+                    SetupFieldDef(
+                        "param.optimization.hours",
+                        "optional",
+                        "Optimierungs-Horizont (legacy)",
+                        False,
+                        "number",
+                        "h",
+                        None,
+                        1,
+                        192,
+                        ("optimization", "hours"),
+                        None,
+                        "/eos/set/param/optimization/hours=<value>",
+                    )
+                ]
+                if _payload_has_path(payload, ("optimization", "hours"))
+                else []
+            ),
             SetupFieldDef("signal.house_load_w", "live", "Hauslast", True, "number", "kW", None, 0, 100, None, "house_load_w", "/eos/set/signal/house_load_kw=<value>"),
             SetupFieldDef("signal.pv_power_w", "live", "PV Leistung", True, "number", "kW", None, 0, 100, None, "pv_power_w", "/eos/set/signal/pv_power_kw=<value>"),
             SetupFieldDef("signal.grid_import_w", "live", "Netzbezug", True, "number", "kW", None, 0, 100, None, "grid_import_w", "/eos/set/signal/grid_import_kw=<value>"),
@@ -940,6 +982,20 @@ def _get_payload_path(payload: dict[str, Any], path: tuple[str | int, ...]) -> A
     return current
 
 
+def _payload_has_path(payload: dict[str, Any], path: tuple[str | int, ...]) -> bool:
+    current: Any = payload
+    for token in path:
+        if isinstance(token, int):
+            if not isinstance(current, list) or token < 0 or token >= len(current):
+                return False
+            current = current[token]
+            continue
+        if not isinstance(current, dict) or token not in current:
+            return False
+        current = current[token]
+    return True
+
+
 def _set_payload_path(payload: dict[str, Any], path: tuple[str | int, ...], value: Any) -> None:
     current: Any = payload
     for index, token in enumerate(path):
@@ -1255,6 +1311,15 @@ def _param_path_to_field_id(*, param_path: str, payload: dict[str, Any]) -> tupl
         raise ValueError("param path is empty")
     parts = raw.split("/")
 
+    if raw == "optimization/horizon_hours":
+        if not _payload_has_path(payload, ("optimization", "horizon_hours")):
+            raise ValueError("optimization.horizon_hours is not available in current payload")
+        return "param.optimization.horizon_hours", 1.0
+    if raw == "optimization/hours":
+        if not _payload_has_path(payload, ("optimization", "hours")):
+            raise ValueError("optimization.hours is not available in current payload")
+        return "param.optimization.hours", 1.0
+
     static_paths: dict[str, tuple[str, float]] = {
         "general/latitude": ("param.general.latitude", 1.0),
         "general/longitude": ("param.general.longitude", 1.0),
@@ -1291,6 +1356,8 @@ def _param_path_to_field_id(*, param_path: str, payload: dict[str, Any]) -> tupl
             "param.load.provider_settings.LoadAkkudoktor.loadakkudoktor_year_energy_kwh",
             1.0,
         ),
+        "prediction/hours": ("param.prediction.hours", 1.0),
+        "prediction/historic_hours": ("param.prediction.historic_hours", 1.0),
         "measurement/keys": ("param.measurement.keys", 1.0),
         "measurement/load_emr_keys": ("param.measurement.load_emr_keys", 1.0),
         "measurement/grid_import_emr_keys": ("param.measurement.grid_import_emr_keys", 1.0),

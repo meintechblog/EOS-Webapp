@@ -6,6 +6,7 @@ type OutputChartsPanelProps = {
   runId: number | null;
   timeline: EosOutputTimelineItem[];
   current: EosOutputCurrentItem[];
+  solutionPayload: unknown | null;
 };
 
 type TimelinePoint = {
@@ -46,6 +47,22 @@ type ChartModel = {
   hasAnyData: boolean;
 };
 
+type PredictionPoint = {
+  tsMs: number;
+  priceCtPerKwh: number | null;
+  pvAcKw: number | null;
+  pvDcKw: number | null;
+};
+
+type PredictionChartModel = {
+  points: PredictionPoint[];
+  windowStartMs: number;
+  windowEndMs: number;
+  priceSplitIndex: number;
+  hasPrice: boolean;
+  hasPv: boolean;
+};
+
 const RESOURCE_COLORS = [
   "#2DD4A6",
   "#7DA6FF",
@@ -68,12 +85,35 @@ const MODE_COLORS = [
   "#A1E06E",
 ];
 
+const PRICE_REAL_COLOR = "#2DD4A6";
+const PRICE_FORECAST_COLOR = "#FFBF75";
+const PV_AC_COLOR = "#7DA6FF";
+const PV_DC_COLOR = "#C6B6FF";
+
 function toTimestampMs(value: string | null | undefined): number | null {
   if (!value) {
     return null;
   }
   const ts = new Date(value).getTime();
   return Number.isFinite(ts) ? ts : null;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
 }
 
 function formatTimeTick(ms: number, spanMs: number): string {
@@ -101,6 +141,22 @@ function createTimeTicks(startMs: number, endMs: number, targetTicks: number): n
   const ticks: number[] = [];
   for (let index = 0; index < count; index += 1) {
     ticks.push(Math.round(startMs + step * index));
+  }
+  return ticks;
+}
+
+function createValueTicks(minValue: number, maxValue: number, targetTicks: number): number[] {
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
+    return [0, 1];
+  }
+  if (maxValue <= minValue) {
+    return [minValue, maxValue + 1];
+  }
+  const count = Math.max(2, targetTicks);
+  const step = (maxValue - minValue) / (count - 1);
+  const ticks: number[] = [];
+  for (let index = 0; index < count; index += 1) {
+    ticks.push(minValue + step * index);
   }
   return ticks;
 }
@@ -270,6 +326,7 @@ function buildFactorSeries(points: TimelinePoint[], current: CurrentPoint[]): Re
   }
   return normalized;
 }
+
 function buildChartModel(timeline: EosOutputTimelineItem[], current: EosOutputCurrentItem[]): ChartModel {
   const timelinePoints = parseTimelinePoints(timeline);
   const currentPoints = parseCurrentPoints(current);
@@ -295,6 +352,174 @@ function buildChartModel(timeline: EosOutputTimelineItem[], current: EosOutputCu
     factorSeries,
     currentPoints,
     hasAnyData: timelinePoints.length > 0 || currentPoints.length > 0,
+  };
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+  return sorted[middle];
+}
+
+function inferIntervalHours(points: Array<{ tsMs: number }>, index: number): number {
+  const current = points[index];
+  const next = points[index + 1];
+  const prev = points[index - 1];
+
+  const diffsMs: number[] = [];
+  if (next && next.tsMs > current.tsMs) {
+    diffsMs.push(next.tsMs - current.tsMs);
+  }
+  if (prev && current.tsMs > prev.tsMs) {
+    diffsMs.push(current.tsMs - prev.tsMs);
+  }
+
+  if (diffsMs.length === 0) {
+    return 1;
+  }
+  const rawHours = diffsMs[0] / (1000 * 60 * 60);
+  if (!Number.isFinite(rawHours) || rawHours <= 0 || rawHours > 12) {
+    return 1;
+  }
+  return rawHours;
+}
+
+function priceCtFromRow(row: Record<string, unknown>): number | null {
+  const ctDirect = toFiniteNumber(row.elec_price_ct_per_kwh ?? row.electricity_price_ct_per_kwh);
+  if (ctDirect !== null) {
+    return ctDirect;
+  }
+
+  const eurPerKwh = toFiniteNumber(
+    row.elec_price_amt_kwh ??
+      row.elecprice_marketprice_kwh ??
+      row.electricity_price_eur_per_kwh ??
+      row.strompreis_euro_pro_kwh,
+  );
+  if (eurPerKwh !== null) {
+    return eurPerKwh * 100;
+  }
+
+  const eurPerWh = toFiniteNumber(row.elecprice_marketprice_wh ?? row.strompreis_euro_pro_wh);
+  if (eurPerWh !== null) {
+    return eurPerWh * 100000;
+  }
+
+  return null;
+}
+
+function pvKwFromRow(row: Record<string, unknown>, intervalHours: number, kind: "ac" | "dc"): number | null {
+  const powerKey = kind === "ac" ? "pvforecast_ac_power" : "pvforecast_dc_power";
+  const powerW = toFiniteNumber(row[powerKey]);
+  if (powerW !== null) {
+    return powerW / 1000;
+  }
+
+  const energyKey = kind === "ac" ? "pvforecast_ac_energy_wh" : "pvforecast_dc_energy_wh";
+  const energyWh = toFiniteNumber(row[energyKey]);
+  if (energyWh !== null) {
+    return energyWh / (1000 * Math.max(0.05, intervalHours));
+  }
+
+  if (kind === "ac") {
+    const legacyWh = toFiniteNumber(row.pv_prognose_wh);
+    if (legacyWh !== null) {
+      return legacyWh / (1000 * Math.max(0.05, intervalHours));
+    }
+  }
+
+  return null;
+}
+
+function parsePredictionPoints(solutionPayload: unknown): PredictionPoint[] {
+  const solution = asRecord(solutionPayload);
+  const prediction = asRecord(solution?.prediction);
+  const dataRaw = prediction?.data;
+  const rows: Array<{ tsMs: number; row: Record<string, unknown> }> = [];
+
+  if (Array.isArray(dataRaw)) {
+    for (const item of dataRaw) {
+      const row = asRecord(item);
+      if (!row) {
+        continue;
+      }
+      const tsMs = toTimestampMs(String(row.date_time ?? ""));
+      if (tsMs === null) {
+        continue;
+      }
+      rows.push({ tsMs, row });
+    }
+  } else {
+    const dataObject = asRecord(dataRaw);
+    if (dataObject) {
+      for (const [rawTs, value] of Object.entries(dataObject)) {
+        const row = asRecord(value);
+        if (!row) {
+          continue;
+        }
+        const tsMs = toTimestampMs(String(row.date_time ?? rawTs));
+        if (tsMs === null) {
+          continue;
+        }
+        rows.push({ tsMs, row });
+      }
+    }
+  }
+
+  rows.sort((left, right) => left.tsMs - right.tsMs);
+
+  const points: PredictionPoint[] = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const current = rows[index];
+    const intervalHours = inferIntervalHours(rows, index);
+    points.push({
+      tsMs: current.tsMs,
+      priceCtPerKwh: priceCtFromRow(current.row),
+      pvAcKw: pvKwFromRow(current.row, intervalHours, "ac"),
+      pvDcKw: pvKwFromRow(current.row, intervalHours, "dc"),
+    });
+  }
+
+  return points;
+}
+
+function buildPredictionModel(solutionPayload: unknown): PredictionChartModel {
+  const points = parsePredictionPoints(solutionPayload);
+  if (points.length === 0) {
+    const nowMs = Date.now();
+    return {
+      points: [],
+      windowStartMs: nowMs - 1000 * 60 * 60,
+      windowEndMs: nowMs + 1000 * 60 * 60 * 8,
+      priceSplitIndex: 0,
+      hasPrice: false,
+      hasPv: false,
+    };
+  }
+
+  const firstTs = points[0].tsMs;
+  const lastTs = points[points.length - 1].tsMs;
+  const diffs = points
+    .slice(1)
+    .map((point, index) => point.tsMs - points[index].tsMs)
+    .filter((diff) => diff > 0 && diff <= 1000 * 60 * 60 * 12);
+  const medianStepMs = median(diffs) ?? 1000 * 60 * 60;
+  const pointsPer24h = Math.max(1, Math.round((24 * 60 * 60 * 1000) / medianStepMs));
+  const priceSplitIndex = Math.min(points.length, pointsPer24h);
+
+  return {
+    points,
+    windowStartMs: firstTs,
+    windowEndMs: Math.max(firstTs + 1000 * 60 * 30, lastTs),
+    priceSplitIndex,
+    hasPrice: points.some((point) => point.priceCtPerKwh !== null),
+    hasPv: points.some((point) => point.pvAcKw !== null || point.pvDcKw !== null),
   };
 }
 
@@ -485,8 +710,216 @@ function FactorTimelineChart({ model }: { model: ChartModel }) {
     </section>
   );
 }
-export function OutputChartsPanel({ runId, timeline, current }: OutputChartsPanelProps) {
+
+function PriceTimelineChart({ model }: { model: PredictionChartModel }) {
+  const width = 960;
+  const height = 320;
+  const top = 18;
+  const left = 56;
+  const right = width - 12;
+  const bottom = height - 28;
+  const ticks = createTimeTicks(model.windowStartMs, model.windowEndMs, 6);
+  const spanMs = model.windowEndMs - model.windowStartMs;
+
+  const priceRows = model.points
+    .filter((point): point is PredictionPoint & { priceCtPerKwh: number } => point.priceCtPerKwh !== null)
+    .map((point) => ({ tsMs: point.tsMs, value: point.priceCtPerKwh }));
+
+  if (priceRows.length === 0) {
+    return (
+      <section className="output-chart-card">
+        <h4>Strompreis-Verlauf</h4>
+        <p className="meta-text">Keine Preis-Prediction im Solution-Payload gefunden.</p>
+      </section>
+    );
+  }
+
+  const values = priceRows.map((row) => row.value);
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  const yMin = rawMax > rawMin ? Math.floor(rawMin * 10) / 10 : rawMin - 1;
+  const yMax = rawMax > rawMin ? Math.ceil(rawMax * 10) / 10 : rawMax + 1;
+  const yTicks = createValueTicks(yMin, yMax, 5);
+
+  const realRows = model.points
+    .slice(0, model.priceSplitIndex)
+    .filter((point): point is PredictionPoint & { priceCtPerKwh: number } => point.priceCtPerKwh !== null)
+    .map((point) => ({ tsMs: point.tsMs, value: point.priceCtPerKwh }));
+  const forecastRows = model.points
+    .slice(Math.max(0, model.priceSplitIndex - 1))
+    .filter((point): point is PredictionPoint & { priceCtPerKwh: number } => point.priceCtPerKwh !== null)
+    .map((point) => ({ tsMs: point.tsMs, value: point.priceCtPerKwh }));
+
+  const realPolyline = realRows
+    .map((row) => {
+      const x = mapX(row.tsMs, model.windowStartMs, model.windowEndMs, left, right);
+      const y = mapY(row.value, yMin, yMax, top, bottom);
+      return `${x},${y}`;
+    })
+    .join(" ");
+  const forecastPolyline = forecastRows
+    .map((row) => {
+      const x = mapX(row.tsMs, model.windowStartMs, model.windowEndMs, left, right);
+      const y = mapY(row.value, yMin, yMax, top, bottom);
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  return (
+    <section className="output-chart-card">
+      <h4>Strompreis-Verlauf (ct/kWh)</h4>
+      <p className="meta-text">
+        Farbtrennung: naher eingelesener Zukunftshorizont vs. weiterfuhrende Prognose (aktuell erste 24h als eingelesen).
+      </p>
+      <svg viewBox={`0 0 ${width} ${height}`} className="output-chart-svg" role="img" aria-label="Electricity price chart">
+        {yTicks.map((tick) => {
+          const y = mapY(tick, yMin, yMax, top, bottom);
+          return (
+            <g key={`price-y-${tick}`}>
+              <line x1={left} y1={y} x2={right} y2={y} stroke="rgba(86,121,188,0.28)" strokeWidth="1" />
+              <text x={left - 8} y={y + 4} textAnchor="end" fill="#9EB0D2" fontSize="11">
+                {tick.toFixed(2)}
+              </text>
+            </g>
+          );
+        })}
+        {ticks.map((tick) => {
+          const x = mapX(tick, model.windowStartMs, model.windowEndMs, left, right);
+          return (
+            <g key={`price-x-${tick}`}>
+              <line x1={x} y1={top} x2={x} y2={bottom} stroke="rgba(86,121,188,0.2)" strokeWidth="1" />
+              <text x={x} y={height - 10} textAnchor="middle" fill="#9EB0D2" fontSize="11">
+                {formatTimeTick(tick, spanMs)}
+              </text>
+            </g>
+          );
+        })}
+        {realPolyline !== "" ? <polyline points={realPolyline} fill="none" stroke={PRICE_REAL_COLOR} strokeWidth="2.6" /> : null}
+        {forecastPolyline !== "" ? (
+          <polyline
+            points={forecastPolyline}
+            fill="none"
+            stroke={PRICE_FORECAST_COLOR}
+            strokeWidth="2.6"
+            strokeDasharray="6 4"
+          />
+        ) : null}
+      </svg>
+      <div className="chart-legend">
+        <span className="legend-item">
+          <i style={{ backgroundColor: PRICE_REAL_COLOR }} />
+          <span>Eingelesen (naher Horizont)</span>
+        </span>
+        <span className="legend-item">
+          <i style={{ backgroundColor: PRICE_FORECAST_COLOR }} />
+          <span>Forecast (weiterer Horizont)</span>
+        </span>
+      </div>
+    </section>
+  );
+}
+
+function PvForecastChart({ model }: { model: PredictionChartModel }) {
+  const width = 960;
+  const height = 320;
+  const top = 18;
+  const left = 56;
+  const right = width - 12;
+  const bottom = height - 28;
+  const ticks = createTimeTicks(model.windowStartMs, model.windowEndMs, 6);
+  const spanMs = model.windowEndMs - model.windowStartMs;
+
+  const acRows = model.points
+    .filter((point): point is PredictionPoint & { pvAcKw: number } => point.pvAcKw !== null)
+    .map((point) => ({ tsMs: point.tsMs, value: point.pvAcKw }));
+  const dcRows = model.points
+    .filter((point): point is PredictionPoint & { pvDcKw: number } => point.pvDcKw !== null)
+    .map((point) => ({ tsMs: point.tsMs, value: point.pvDcKw }));
+
+  const allValues = [...acRows.map((row) => row.value), ...dcRows.map((row) => row.value)];
+  if (allValues.length === 0) {
+    return (
+      <section className="output-chart-card">
+        <h4>PV-Produktionsprognose (kW)</h4>
+        <p className="meta-text">Keine PV-Prediction im Solution-Payload gefunden.</p>
+      </section>
+    );
+  }
+
+  const yMax = Math.max(0.1, Math.ceil(Math.max(...allValues) * 10) / 10);
+  const yTicks = createValueTicks(0, yMax, 5);
+
+  const acPolyline = acRows
+    .map((row) => {
+      const x = mapX(row.tsMs, model.windowStartMs, model.windowEndMs, left, right);
+      const y = mapY(row.value, 0, yMax, top, bottom);
+      return `${x},${y}`;
+    })
+    .join(" ");
+  const dcPolyline = dcRows
+    .map((row) => {
+      const x = mapX(row.tsMs, model.windowStartMs, model.windowEndMs, left, right);
+      const y = mapY(row.value, 0, yMax, top, bottom);
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  return (
+    <section className="output-chart-card">
+      <h4>PV-Produktionsprognose (kW)</h4>
+      <p className="meta-text">Aus `solution.prediction.data` (AC als Hauptlinie, DC optional als Kontext).</p>
+      <svg viewBox={`0 0 ${width} ${height}`} className="output-chart-svg" role="img" aria-label="PV forecast chart">
+        {yTicks.map((tick) => {
+          const y = mapY(tick, 0, yMax, top, bottom);
+          return (
+            <g key={`pv-y-${tick}`}>
+              <line x1={left} y1={y} x2={right} y2={y} stroke="rgba(86,121,188,0.28)" strokeWidth="1" />
+              <text x={left - 8} y={y + 4} textAnchor="end" fill="#9EB0D2" fontSize="11">
+                {tick.toFixed(2)}
+              </text>
+            </g>
+          );
+        })}
+        {ticks.map((tick) => {
+          const x = mapX(tick, model.windowStartMs, model.windowEndMs, left, right);
+          return (
+            <g key={`pv-x-${tick}`}>
+              <line x1={x} y1={top} x2={x} y2={bottom} stroke="rgba(86,121,188,0.2)" strokeWidth="1" />
+              <text x={x} y={height - 10} textAnchor="middle" fill="#9EB0D2" fontSize="11">
+                {formatTimeTick(tick, spanMs)}
+              </text>
+            </g>
+          );
+        })}
+        {acPolyline !== "" ? <polyline points={acPolyline} fill="none" stroke={PV_AC_COLOR} strokeWidth="2.6" /> : null}
+        {dcPolyline !== "" ? (
+          <polyline
+            points={dcPolyline}
+            fill="none"
+            stroke={PV_DC_COLOR}
+            strokeWidth="2.2"
+            strokeDasharray="5 4"
+          />
+        ) : null}
+      </svg>
+      <div className="chart-legend">
+        <span className="legend-item">
+          <i style={{ backgroundColor: PV_AC_COLOR }} />
+          <span>PV AC (kW)</span>
+        </span>
+        <span className="legend-item">
+          <i style={{ backgroundColor: PV_DC_COLOR }} />
+          <span>PV DC (kW)</span>
+        </span>
+      </div>
+    </section>
+  );
+}
+
+export function OutputChartsPanel({ runId, timeline, current, solutionPayload }: OutputChartsPanelProps) {
   const model = useMemo(() => buildChartModel(timeline, current), [timeline, current]);
+  const predictionModel = useMemo(() => buildPredictionModel(solutionPayload), [solutionPayload]);
+  const hasAnyData = model.hasAnyData || predictionModel.hasPrice || predictionModel.hasPv;
 
   return (
     <div className="panel">
@@ -498,9 +931,11 @@ export function OutputChartsPanel({ runId, timeline, current }: OutputChartsPane
         <p className="meta-text">
           Visualisierung orientiert sich am EOSdash-Prinzip aus dem Prediction-Tab: Zeitachse + getrennte Fachcharts statt einer einzigen uberladenen Grafik.
         </p>
-        {!model.hasAnyData ? <p>Keine Chart-Daten fur den ausgewahlten Run verfugbar.</p> : null}
-        {model.hasAnyData ? (
+        {!hasAnyData ? <p>Keine Chart-Daten fur den ausgewahlten Run verfugbar.</p> : null}
+        {hasAnyData ? (
           <div className="output-chart-grid">
+            <PriceTimelineChart model={predictionModel} />
+            <PvForecastChart model={predictionModel} />
             <ModeTimelineChart model={model} />
             <FactorTimelineChart model={model} />
           </div>

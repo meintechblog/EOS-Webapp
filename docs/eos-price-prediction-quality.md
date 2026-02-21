@@ -1,0 +1,44 @@
+# EOS Price Prediction Quality
+
+## Purpose
+
+This note documents practical levers to improve electricity-price prediction quality in EOS and how EOS-Webapp uses them.
+
+## What Matters Most
+
+1. Use a real market-data provider.
+   - Prefer `ElecPriceEnergyCharts` or `ElecPriceAkkudoktor`.
+   - `ElecPriceImport` with a constant series will always produce a flat price line.
+2. Set enough forecast/history horizon.
+   - `prediction.hours` controls future horizon.
+   - `prediction.historic_hours` controls how much history is retained for model fitting.
+   - EOS docs recommend raising history to around `840h` for better quality.
+3. Keep provider settings correct.
+   - For EnergyCharts, ensure correct `elecprice.energycharts.bidding_zone`.
+   - `elecprice.charges_kwh` and `elecprice.vat_rate` are applied on top of market prices.
+4. Refresh predictions before critical force runs.
+   - Run `Prediction Refresh (prices/all)` shortly before `Force Run` when data might be stale.
+
+## EOS Internals Relevant for Quality
+
+- EnergyCharts provider fetches a broad history window (up to ~35 days) and then extrapolates missing horizon.
+- Extrapolation uses ETS seasonality when enough datapoints are available:
+  - `> 800` datasets: weekly seasonality (168h)
+  - `> 168` datasets: daily seasonality (24h)
+  - otherwise median fallback
+
+## EOS-Webapp Behavior
+
+- Run-Center now exposes a prominent horizon dropdown.
+- On apply, Webapp updates:
+  - `prediction.hours`
+  - `prediction.historic_hours`
+  - and, when available in payload, `optimization.horizon_hours` or legacy `optimization.hours`
+- Run-Historie shows live runtime for running jobs and final runtime for finished jobs.
+
+## Sources
+
+- EOS docs (Prediction): `https://docs.akkudoktor.net/akkudoktoreos/prediction.html`
+- EOS docs (Automatic Optimization): `https://docs.akkudoktor.net/akkudoktoreos/automatic_optimization.html`
+- EOS source (EnergyCharts provider): `https://github.com/Akkudoktor-EOS/EOS/blob/main/src/akkudoktoreos/prediction/elecpriceenergycharts.py`
+- EOS source (Akkudoktor provider): `https://github.com/Akkudoktor-EOS/EOS/blob/main/src/akkudoktoreos/prediction/elecpriceakkudoktor.py`

@@ -117,6 +117,11 @@ pre {
   min-width: 0;
 }
 
+.panel-highlight {
+  border-color: rgba(45, 212, 166, 0.7);
+  background: linear-gradient(160deg, rgba(14, 51, 69, 0.8), rgba(8, 32, 58, 0.95));
+}
+
 .panel + .panel {
   margin-top: 0.8rem;
 }
@@ -304,6 +309,14 @@ textarea:focus {
   gap: 0.3rem;
 }
 
+.run-horizon-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+  margin-bottom: 0.45rem;
+}
+
 .run-list {
   display: grid;
   gap: 0.5rem;
@@ -318,7 +331,7 @@ textarea:focus {
   color: var(--text-main);
   text-align: left;
   display: grid;
-  grid-template-columns: 54px 56px auto 1fr;
+  grid-template-columns: 54px 56px auto minmax(0, 1fr) auto;
   gap: 0.5rem;
   padding: 0.45rem 0.6rem;
   font-size: 0.82rem;
@@ -329,6 +342,17 @@ textarea:focus {
 .run-item-active {
   border-color: rgba(45, 212, 166, 0.75);
   background: rgba(18, 86, 67, 0.45);
+}
+
+.run-item-duration {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.run-item-running .run-item-duration {
+  color: #ffe7c6;
 }
 
 .data-table {
@@ -488,5 +512,11 @@ pre {
 
   .status-strip {
     justify-content: flex-start;
+  }
+}
+
+@media (max-width: 560px) {
+  .run-horizon-row {
+    grid-template-columns: 1fr;
   }
 }

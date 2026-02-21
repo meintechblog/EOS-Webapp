@@ -9,7 +9,7 @@ The app runs in **HTTP-only setup + HTTP output dispatch mode**.
 - Left pane: `Inputs & Setup` (autosave, mandatory/optional/live, import/export)
 - Middle pane: `Run-Center` (runtime, force run, full run history)
 - Right pane: `Outputs` (active decisions, timeline, dispatch log, output targets, plausibility)
-- Right pane top includes a collapsible chart block for run decisions over time (mode timeline, factor timeline, dispatch status timeline)
+- Right pane top includes a collapsible chart block (strompreis in `ct/kWh`, PV forecast in `kW`, mode/factor timelines)
 - Dynamic field updates use **`/eos/set/*`**
 - Output dispatch uses **HTTP webhooks** (scheduled + heartbeat + force)
 - MQTT dispatch path stays disabled in active runtime path
@@ -28,6 +28,7 @@ Internal storage may still use EOS-compatible units (`EUR/kWh`, `Wh`, `W`) but c
 Details:
 
 - `docs/ui-unit-policy.md`
+- `docs/eos-price-prediction-quality.md`
 - `AGENTS.md`
 
 Consistency check:
@@ -39,6 +40,13 @@ Consistency check:
 CI guardrail:
 
 - GitHub Actions workflow: `.github/workflows/ui-unit-policy.yml`
+
+## Run-Center Horizon + Runtime
+
+- Run-Center contains a prominent horizon dropdown.
+- It writes `prediction.hours` and `prediction.historic_hours`.
+- If available in current EOS payload, it also writes `optimization.horizon_hours` (or legacy `optimization.hours`).
+- Run history shows live runtime for active runs and final duration for completed runs.
 
 ## Dependencies
 

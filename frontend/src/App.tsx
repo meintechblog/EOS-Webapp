@@ -49,6 +49,10 @@ type DraftState = {
 };
 
 const AUTOSAVE_MS = 1500;
+const PREDICTION_HOURS_FIELD_ID = "param.prediction.hours";
+const PREDICTION_HISTORIC_HOURS_FIELD_ID = "param.prediction.historic_hours";
+const OPTIMIZATION_HOURS_FIELD_ID = "param.optimization.hours";
+const OPTIMIZATION_HORIZON_HOURS_FIELD_ID = "param.optimization.horizon_hours";
 
 function toInputString(field: SetupField): string {
   const value = field.current_value;
@@ -82,7 +86,7 @@ function formatTimestamp(value: string | null): string {
   return date.toLocaleString();
 }
 
-function formatDuration(startedAt: string | null, finishedAt: string | null): string {
+function formatDuration(startedAt: string | null, finishedAt: string | null, nowMs?: number): string {
   if (!startedAt) {
     return "-";
   }
@@ -90,11 +94,12 @@ function formatDuration(startedAt: string | null, finishedAt: string | null): st
   if (Number.isNaN(start.getTime())) {
     return "-";
   }
-  const end = finishedAt ? new Date(finishedAt) : new Date();
-  if (Number.isNaN(end.getTime())) {
+  const fallbackNow = nowMs === undefined ? Date.now() : nowMs;
+  const endMs = finishedAt ? new Date(finishedAt).getTime() : fallbackNow;
+  if (Number.isNaN(endMs)) {
     return "-";
   }
-  const seconds = Math.max(0, Math.round((end.getTime() - start.getTime()) / 1000));
+  const seconds = Math.max(0, Math.round((endMs - start.getTime()) / 1000));
   if (seconds < 60) {
     return `${seconds}s`;
   }
@@ -106,6 +111,23 @@ function formatDuration(startedAt: string | null, finishedAt: string | null): st
   const hours = Math.floor(minutes / 60);
   const restMinutes = minutes % 60;
   return `${hours}h ${restMinutes}m`;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (text === "") {
+      return null;
+    }
+    const parsed = Number(text);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
 }
 
 function runStatusChipClass(statusValue: string): string {
@@ -355,6 +377,9 @@ export default function App() {
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [isForcingRun, setIsForcingRun] = useState(false);
   const [isRefreshingPrediction, setIsRefreshingPrediction] = useState<EosPredictionRefreshScope | null>(null);
+  const [isSavingHorizon, setIsSavingHorizon] = useState(false);
+  const [horizonHoursDraft, setHorizonHoursDraft] = useState("48");
+  const [runNowMs, setRunNowMs] = useState<number>(() => Date.now());
   const [runSourceFilter, setRunSourceFilter] = useState<"all" | "automatic" | "force_run" | "prediction_refresh">("all");
   const [runStatusFilter, setRunStatusFilter] = useState<"all" | "running" | "success" | "partial" | "failed">("all");
 
@@ -729,6 +754,195 @@ export default function App() {
     return { mandatory, optional, live };
   }, [fields]);
 
+  const predictionHoursField = useMemo(
+    () => fields.find((field) => field.field_id === PREDICTION_HOURS_FIELD_ID) ?? null,
+    [fields],
+  );
+  const predictionHistoricHoursField = useMemo(
+    () => fields.find((field) => field.field_id === PREDICTION_HISTORIC_HOURS_FIELD_ID) ?? null,
+    [fields],
+  );
+  const optimizationHoursField = useMemo(
+    () => fields.find((field) => field.field_id === OPTIMIZATION_HOURS_FIELD_ID) ?? null,
+    [fields],
+  );
+  const optimizationHorizonHoursField = useMemo(
+    () => fields.find((field) => field.field_id === OPTIMIZATION_HORIZON_HOURS_FIELD_ID) ?? null,
+    [fields],
+  );
+
+  const runtimePredictionHours = useMemo(() => {
+    const payload = runtime?.config_payload;
+    if (payload === null || payload === undefined || typeof payload !== "object" || Array.isArray(payload)) {
+      return null;
+    }
+    const prediction = (payload as Record<string, unknown>).prediction;
+    if (prediction === null || prediction === undefined || typeof prediction !== "object" || Array.isArray(prediction)) {
+      return null;
+    }
+    return toFiniteNumber((prediction as Record<string, unknown>).hours);
+  }, [runtime]);
+
+  const runtimeOptimizationHours = useMemo(() => {
+    const payload = runtime?.config_payload;
+    if (payload === null || payload === undefined || typeof payload !== "object" || Array.isArray(payload)) {
+      return null;
+    }
+    const optimization = (payload as Record<string, unknown>).optimization;
+    if (
+      optimization === null ||
+      optimization === undefined ||
+      typeof optimization !== "object" ||
+      Array.isArray(optimization)
+    ) {
+      return null;
+    }
+    const optimizationRecord = optimization as Record<string, unknown>;
+    return (
+      toFiniteNumber(optimizationRecord.horizon_hours) ??
+      toFiniteNumber(optimizationRecord.hours)
+    );
+  }, [runtime]);
+
+  const currentPredictionHours = useMemo(
+    () => toFiniteNumber(predictionHoursField?.current_value) ?? runtimePredictionHours,
+    [predictionHoursField, runtimePredictionHours],
+  );
+  const currentPredictionHistoricHours = useMemo(
+    () => toFiniteNumber(predictionHistoricHoursField?.current_value),
+    [predictionHistoricHoursField],
+  );
+  const currentOptimizationHours = useMemo(
+    () =>
+      toFiniteNumber(optimizationHorizonHoursField?.current_value) ??
+      toFiniteNumber(optimizationHoursField?.current_value) ??
+      runtimeOptimizationHours,
+    [optimizationHorizonHoursField, optimizationHoursField, runtimeOptimizationHours],
+  );
+
+  const hasRunningRuns = useMemo(() => runs.some((run) => run.status === "running"), [runs]);
+
+  useEffect(() => {
+    if (!hasRunningRuns) {
+      setRunNowMs(Date.now());
+      return;
+    }
+    const interval = window.setInterval(() => {
+      setRunNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [hasRunningRuns]);
+
+  useEffect(() => {
+    if (isSavingHorizon) {
+      return;
+    }
+    const fallbackHours = 48;
+    const targetHours = Math.round(currentPredictionHours ?? currentOptimizationHours ?? fallbackHours);
+    setHorizonHoursDraft(String(Math.max(1, targetHours)));
+  }, [currentOptimizationHours, currentPredictionHours, isSavingHorizon]);
+
+  const baseHorizonHours = useMemo(
+    () => Math.max(1, Math.round(currentPredictionHours ?? currentOptimizationHours ?? 48)),
+    [currentOptimizationHours, currentPredictionHours],
+  );
+
+  const selectedHorizonHours = useMemo(
+    () => Math.max(1, Math.round(toFiniteNumber(horizonHoursDraft) ?? baseHorizonHours)),
+    [horizonHoursDraft, baseHorizonHours],
+  );
+  const horizonOptions = useMemo(() => {
+    const base = [48, 72, 96];
+    const merged = new Set<number>([...base, selectedHorizonHours]);
+    return Array.from(merged).sort((left, right) => left - right);
+  }, [selectedHorizonHours]);
+  const horizonDirty = useMemo(() => {
+    return selectedHorizonHours !== baseHorizonHours;
+  }, [baseHorizonHours, selectedHorizonHours]);
+  const horizonControlDisabled =
+    (predictionHoursField === null &&
+      optimizationHoursField === null &&
+      optimizationHorizonHoursField === null) ||
+    isSavingHorizon ||
+    isForcingRun ||
+    isRefreshingPrediction !== null;
+  const hasOptimizationHorizonControl =
+    optimizationHoursField !== null || optimizationHorizonHoursField !== null;
+
+  const applyPredictionHorizon = useCallback(async () => {
+    if (
+      predictionHoursField === null &&
+      predictionHistoricHoursField === null &&
+      optimizationHoursField === null &&
+      optimizationHorizonHoursField === null
+    ) {
+      setGlobalError("Horizon-Felder sind aktuell nicht verfugbar.");
+      return;
+    }
+
+    const targetHours = selectedHorizonHours;
+    const updates: Array<{ field_id: string; value: unknown; source: "ui" }> = [];
+    if (predictionHoursField !== null) {
+      updates.push({
+        field_id: PREDICTION_HOURS_FIELD_ID,
+        value: targetHours,
+        source: "ui",
+      });
+    }
+    if (predictionHistoricHoursField !== null) {
+      updates.push({
+        field_id: PREDICTION_HISTORIC_HOURS_FIELD_ID,
+        value: targetHours,
+        source: "ui",
+      });
+    }
+    if (optimizationHorizonHoursField !== null) {
+      updates.push({
+        field_id: OPTIMIZATION_HORIZON_HOURS_FIELD_ID,
+        value: targetHours,
+        source: "ui",
+      });
+    } else if (optimizationHoursField !== null) {
+      updates.push({
+        field_id: OPTIMIZATION_HOURS_FIELD_ID,
+        value: targetHours,
+        source: "ui",
+      });
+    }
+
+    if (updates.length === 0) {
+      setGlobalError("Keine passenden Horizon-Felder verfugbar.");
+      return;
+    }
+
+    setIsSavingHorizon(true);
+    try {
+      const response = await patchSetupFields(updates);
+      const rejected = response.results.filter((item) => item.status !== "saved");
+      if (rejected.length > 0) {
+        const details = rejected
+          .map((item) => `${item.field_id}: ${item.error ?? "save failed"}`)
+          .join(" | ");
+        throw new Error(details);
+      }
+      await Promise.all([loadSetup(), loadRunCenter()]);
+      setRuntimeMessage(`Vorschau-Horizont auf ${targetHours}h gesetzt.`);
+      setGlobalError(null);
+    } catch (error) {
+      setGlobalError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSavingHorizon(false);
+    }
+  }, [
+    loadRunCenter,
+    loadSetup,
+    optimizationHorizonHoursField,
+    optimizationHoursField,
+    predictionHoursField,
+    predictionHistoricHoursField,
+    selectedHorizonHours,
+  ]);
+
   const runStats = useMemo(() => {
     const total = runs.length;
     const automatic = runs.filter((run) => run.trigger_source === "automatic").length;
@@ -928,6 +1142,46 @@ export default function App() {
           <h2>Run-Center</h2>
           <p className="pane-copy">Runtime, Run-Typen, Historie und Fehleranalyse in Anwendersprache.</p>
 
+          <div className="panel panel-highlight">
+            <div className="panel-head">
+              <h3>Vorschau-Horizont</h3>
+              <span className="chip chip-neutral">
+                aktuell: {baseHorizonHours}h
+              </span>
+            </div>
+            <div className="run-horizon-row">
+              <select
+                value={horizonHoursDraft}
+                onChange={(event) => setHorizonHoursDraft(event.target.value)}
+                disabled={horizonControlDisabled}
+              >
+                {horizonOptions.map((hours) => (
+                  <option key={hours} value={String(hours)}>
+                    {hours}h
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => void applyPredictionHorizon()}
+                disabled={horizonControlDisabled || !horizonDirty}
+              >
+                {isSavingHorizon ? "speichere..." : "Horizont übernehmen"}
+              </button>
+            </div>
+            <p className="meta-text">
+              Setzt `prediction.hours` und {predictionHistoricHoursField ? "`prediction.historic_hours`" : "optional die Historie"}
+              {hasOptimizationHorizonControl ? ", plus Optimierungs-Horizont" : ""}
+              {" "}fur nachfolgende Runs.
+            </p>
+            {currentPredictionHistoricHours !== null ? (
+              <p className="meta-text">Aktuelle Prediction-Historie: {Math.max(1, Math.round(currentPredictionHistoricHours))}h</p>
+            ) : null}
+            {currentOptimizationHours !== null ? (
+              <p className="meta-text">Aktueller Optimierungs-Horizont: {Math.max(1, Math.round(currentOptimizationHours))}h</p>
+            ) : null}
+          </div>
+
           <div className="panel">
             <h3>Run-Typen</h3>
             <ul className="plain-list">
@@ -1035,13 +1289,14 @@ export default function App() {
                 <button
                   key={run.id}
                   type="button"
-                  className={`run-item${selectedRunId === run.id ? " run-item-active" : ""}`}
+                  className={`run-item${selectedRunId === run.id ? " run-item-active" : ""}${run.status === "running" ? " run-item-running" : ""}`}
                   onClick={() => setSelectedRunId(run.id)}
                 >
                   <span>#{run.id}</span>
                   <span>{runSourceLabel(run.trigger_source)}</span>
                   <span className={`chip ${runStatusChipClass(run.status)}`}>{run.status}</span>
                   <span>{formatTimestamp(run.started_at)}</span>
+                  <span className="run-item-duration">{formatDuration(run.started_at, run.finished_at, runNowMs)}</span>
                 </button>
               ))}
             </div>
@@ -1058,7 +1313,7 @@ export default function App() {
                   <li>Quelle: <strong>{runSourceLabel(selectedRunDetail.trigger_source)}</strong></li>
                   <li>Mode: <strong>{selectedRunDetail.run_mode}</strong></li>
                   <li>Status: <span className={`chip ${runStatusChipClass(selectedRunDetail.status)}`}>{selectedRunDetail.status}</span></li>
-                  <li>Dauer: <strong>{formatDuration(selectedRunDetail.started_at, selectedRunDetail.finished_at)}</strong></li>
+                  <li>Dauer: <strong>{formatDuration(selectedRunDetail.started_at, selectedRunDetail.finished_at, runNowMs)}</strong></li>
                   <li>EOS last_run_datetime: <strong>{formatTimestamp(selectedRunDetail.eos_last_run_datetime)}</strong></li>
                 </ul>
                 <div className="meta-text">
@@ -1101,6 +1356,7 @@ export default function App() {
             runId={selectedRunId}
             timeline={visibleOutputTimeline}
             current={visibleOutputCurrent}
+            solutionPayload={solution?.payload_json ?? null}
           />
 
           <div className="panel">
