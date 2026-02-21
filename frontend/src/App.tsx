@@ -1093,9 +1093,6 @@ export default function App() {
     const merged = new Set<number>([...base, selectedHorizonHours]);
     return Array.from(merged).sort((left, right) => left - right);
   }, [selectedHorizonHours]);
-  const horizonDirty = useMemo(() => {
-    return selectedHorizonHours !== baseHorizonHours;
-  }, [baseHorizonHours, selectedHorizonHours]);
   const horizonControlDisabled =
     (predictionHoursField === null &&
       optimizationHoursField === null &&
@@ -1106,7 +1103,7 @@ export default function App() {
   const hasOptimizationHorizonControl =
     optimizationHoursField !== null || optimizationHorizonHoursField !== null;
 
-  const applyPredictionHorizon = useCallback(async () => {
+  const applyPredictionHorizon = useCallback(async (requestedHours?: number) => {
     if (
       predictionHoursField === null &&
       predictionHistoricHoursField === null &&
@@ -1117,7 +1114,7 @@ export default function App() {
       return;
     }
 
-    const targetHours = selectedHorizonHours;
+    const targetHours = Math.max(1, Math.round(requestedHours ?? selectedHorizonHours));
     const historicBaselineHours = Math.max(
       840,
       Math.round(currentPredictionHistoricHours ?? 0),
@@ -1190,6 +1187,18 @@ export default function App() {
     predictionHistoricHoursField,
     selectedHorizonHours,
   ]);
+
+  const handleHorizonSelectChange = useCallback(
+    (rawValue: string) => {
+      const parsed = Math.max(1, Math.round(toFiniteNumber(rawValue) ?? baseHorizonHours));
+      setHorizonHoursDraft(String(parsed));
+      if (parsed === baseHorizonHours) {
+        return;
+      }
+      void applyPredictionHorizon(parsed);
+    },
+    [applyPredictionHorizon, baseHorizonHours],
+  );
 
   const runStats = useMemo(() => {
     const total = runs.length;
@@ -1467,7 +1476,7 @@ export default function App() {
             <div className="run-horizon-row">
               <select
                 value={horizonHoursDraft}
-                onChange={(event) => setHorizonHoursDraft(event.target.value)}
+                onChange={(event) => handleHorizonSelectChange(event.target.value)}
                 disabled={horizonControlDisabled}
               >
                 {horizonOptions.map((hours) => (
@@ -1476,18 +1485,12 @@ export default function App() {
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
-                onClick={() => void applyPredictionHorizon()}
-                disabled={horizonControlDisabled || !horizonDirty}
-              >
-                {isSavingHorizon ? "speichere..." : "Horizont übernehmen"}
-              </button>
+              {isSavingHorizon ? <span className="chip chip-warning">speichere...</span> : null}
             </div>
             <p className="meta-text">
               Setzt `prediction.hours` und {predictionHistoricHoursField ? "`prediction.historic_hours`" : "optional die Historie"}
               {hasOptimizationHorizonControl ? ", plus Optimierungs-Horizont" : ""}
-              {" "}fur nachfolgende Runs. Historic wird adaptiv mit Mindestziel `840h` gesetzt.
+              {" "}fur nachfolgende Runs. Wert wird direkt beim Auswahlen gespeichert, Historic adaptiv mit Mindestziel `840h`.
             </p>
             {currentPredictionHistoricHours !== null ? (
               <p className="meta-text">Aktuelle Prediction-Historie: {Math.max(1, Math.round(currentPredictionHistoricHours))}h</p>

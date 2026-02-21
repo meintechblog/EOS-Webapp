@@ -52,6 +52,7 @@ type PredictionPoint = {
   priceCtPerKwh: number | null;
   pvAcKw: number | null;
   pvDcKw: number | null;
+  loadKw: number | null;
 };
 
 type PredictionChartModel = {
@@ -64,6 +65,7 @@ type PredictionChartModel = {
   horizonHours: number;
   hasPrice: boolean;
   hasPv: boolean;
+  hasLoad: boolean;
 };
 
 const RESOURCE_COLORS = [
@@ -92,6 +94,7 @@ const PRICE_REAL_COLOR = "#2DD4A6";
 const PRICE_FORECAST_COLOR = "#FFBF75";
 const PV_AC_COLOR = "#7DA6FF";
 const PV_DC_COLOR = "#C6B6FF";
+const LOAD_FORECAST_COLOR = "#F9E58B";
 
 function toTimestampMs(value: string | null | undefined): number | null {
   if (!value) {
@@ -417,23 +420,60 @@ function priceCtFromRow(row: Record<string, unknown>): number | null {
   return null;
 }
 
+function powerWToKw(powerW: number): number {
+  return powerW / 1000;
+}
+
+function energyWhToKw(energyWh: number, intervalHours: number): number {
+  return energyWh / (1000 * Math.max(0.05, intervalHours));
+}
+
 function pvKwFromRow(row: Record<string, unknown>, intervalHours: number, kind: "ac" | "dc"): number | null {
   const powerKey = kind === "ac" ? "pvforecast_ac_power" : "pvforecast_dc_power";
   const powerW = toFiniteNumber(row[powerKey]);
   if (powerW !== null) {
-    return powerW / 1000;
+    return powerWToKw(powerW);
   }
 
   const energyKey = kind === "ac" ? "pvforecast_ac_energy_wh" : "pvforecast_dc_energy_wh";
   const energyWh = toFiniteNumber(row[energyKey]);
   if (energyWh !== null) {
-    return energyWh / (1000 * Math.max(0.05, intervalHours));
+    return energyWhToKw(energyWh, intervalHours);
   }
 
   if (kind === "ac") {
     const legacyWh = toFiniteNumber(row.pv_prognose_wh);
     if (legacyWh !== null) {
-      return legacyWh / (1000 * Math.max(0.05, intervalHours));
+      return energyWhToKw(legacyWh, intervalHours);
+    }
+  }
+
+  return null;
+}
+
+function loadKwFromRow(row: Record<string, unknown>, intervalHours: number): number | null {
+  const powerKeys = [
+    "loadforecast_power_w",
+    "load_mean_adjusted",
+    "load_mean",
+    "loadakkudoktor_mean_power_w",
+  ] as const;
+  for (const key of powerKeys) {
+    const powerW = toFiniteNumber(row[key]);
+    if (powerW !== null) {
+      return powerWToKw(powerW);
+    }
+  }
+
+  const energyKeys = [
+    "loadforecast_energy_wh",
+    "loadakkudoktor_mean_energy_wh",
+    "load_mean_energy_wh",
+  ] as const;
+  for (const key of energyKeys) {
+    const energyWh = toFiniteNumber(row[key]);
+    if (energyWh !== null) {
+      return energyWhToKw(energyWh, intervalHours);
     }
   }
 
@@ -486,6 +526,7 @@ function parsePredictionPoints(solutionPayload: unknown): PredictionPoint[] {
       priceCtPerKwh: priceCtFromRow(current.row),
       pvAcKw: pvKwFromRow(current.row, intervalHours, "ac"),
       pvDcKw: pvKwFromRow(current.row, intervalHours, "dc"),
+      loadKw: loadKwFromRow(current.row, intervalHours),
     });
   }
 
@@ -506,6 +547,7 @@ function buildPredictionModel(solutionPayload: unknown): PredictionChartModel {
       horizonHours: 0,
       hasPrice: false,
       hasPv: false,
+      hasLoad: false,
     };
   }
 
@@ -535,6 +577,7 @@ function buildPredictionModel(solutionPayload: unknown): PredictionChartModel {
     horizonHours,
     hasPrice: points.some((point) => point.priceCtPerKwh !== null),
     hasPv: points.some((point) => point.pvAcKw !== null || point.pvDcKw !== null),
+    hasLoad: points.some((point) => point.loadKw !== null),
   };
 }
 
@@ -932,10 +975,86 @@ function PvForecastChart({ model }: { model: PredictionChartModel }) {
   );
 }
 
+function LoadForecastChart({ model }: { model: PredictionChartModel }) {
+  const width = 960;
+  const height = 320;
+  const top = 18;
+  const left = 56;
+  const right = width - 12;
+  const bottom = height - 28;
+  const ticks = createTimeTicks(model.windowStartMs, model.windowEndMs, 6);
+  const spanMs = model.windowEndMs - model.windowStartMs;
+
+  const loadRows = model.points
+    .filter((point): point is PredictionPoint & { loadKw: number } => point.loadKw !== null)
+    .map((point) => ({ tsMs: point.tsMs, value: point.loadKw }));
+
+  if (loadRows.length === 0) {
+    return (
+      <section className="output-chart-card">
+        <h4>Load-Prognose (kW)</h4>
+        <p className="meta-text">Keine Last-Prediction im Solution-Payload gefunden.</p>
+      </section>
+    );
+  }
+
+  const yMax = Math.max(0.1, Math.ceil(Math.max(...loadRows.map((row) => row.value)) * 10) / 10);
+  const yTicks = createValueTicks(0, yMax, 5);
+  const loadPolyline = loadRows
+    .map((row) => {
+      const x = mapX(row.tsMs, model.windowStartMs, model.windowEndMs, left, right);
+      const y = mapY(row.value, 0, yMax, top, bottom);
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  return (
+    <section className="output-chart-card">
+      <h4>Load-Prognose (kW)</h4>
+      <p className="meta-text">
+        Erwartete, nicht-optimierbare Haushaltslast aus `solution.prediction.data` uber den aktiven Vorhersagehorizont.
+      </p>
+      <svg viewBox={`0 0 ${width} ${height}`} className="output-chart-svg" role="img" aria-label="Load forecast chart">
+        {yTicks.map((tick) => {
+          const y = mapY(tick, 0, yMax, top, bottom);
+          return (
+            <g key={`load-y-${tick}`}>
+              <line x1={left} y1={y} x2={right} y2={y} stroke="rgba(86,121,188,0.28)" strokeWidth="1" />
+              <text x={left - 8} y={y + 4} textAnchor="end" fill="#9EB0D2" fontSize="11">
+                {tick.toFixed(2)}
+              </text>
+            </g>
+          );
+        })}
+        {ticks.map((tick) => {
+          const x = mapX(tick, model.windowStartMs, model.windowEndMs, left, right);
+          return (
+            <g key={`load-x-${tick}`}>
+              <line x1={x} y1={top} x2={x} y2={bottom} stroke="rgba(86,121,188,0.2)" strokeWidth="1" />
+              <text x={x} y={height - 10} textAnchor="middle" fill="#9EB0D2" fontSize="11">
+                {formatTimeTick(tick, spanMs)}
+              </text>
+            </g>
+          );
+        })}
+        {loadPolyline !== "" ? (
+          <polyline points={loadPolyline} fill="none" stroke={LOAD_FORECAST_COLOR} strokeWidth="2.6" />
+        ) : null}
+      </svg>
+      <div className="chart-legend">
+        <span className="legend-item">
+          <i style={{ backgroundColor: LOAD_FORECAST_COLOR }} />
+          <span>Haushaltslast-Prognose (kW)</span>
+        </span>
+      </div>
+    </section>
+  );
+}
+
 export function OutputChartsPanel({ runId, timeline, current, solutionPayload }: OutputChartsPanelProps) {
   const model = useMemo(() => buildChartModel(timeline, current), [timeline, current]);
   const predictionModel = useMemo(() => buildPredictionModel(solutionPayload), [solutionPayload]);
-  const hasAnyData = model.hasAnyData || predictionModel.hasPrice || predictionModel.hasPv;
+  const hasAnyData = model.hasAnyData || predictionModel.hasPrice || predictionModel.hasPv || predictionModel.hasLoad;
 
   return (
     <div className="panel">
@@ -953,6 +1072,7 @@ export function OutputChartsPanel({ runId, timeline, current, solutionPayload }:
           <div className="output-chart-grid">
             <PriceTimelineChart model={predictionModel} />
             <PvForecastChart model={predictionModel} />
+            <LoadForecastChart model={predictionModel} />
             <ModeTimelineChart model={model} />
             <FactorTimelineChart model={model} />
           </div>

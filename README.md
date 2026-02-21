@@ -9,7 +9,7 @@ The app runs in **HTTP-only setup + HTTP output dispatch mode**.
 - Left pane: `Inputs & Setup` (autosave, mandatory/optional/live, import/export)
 - Middle pane: `Run-Center` (runtime, force run, full run history)
 - Right pane: `Outputs` (active decisions, timeline, dispatch log, output targets, plausibility)
-- Right pane top includes a collapsible chart block (strompreis in `ct/kWh`, PV forecast in `kW`, mode/factor timelines)
+- Right pane top includes a collapsible chart block (strompreis in `ct/kWh`, PV + load forecast in `kW`, mode/factor timelines)
 - Dynamic field updates use **`/eos/set/*`**
 - Output dispatch uses **HTTP webhooks** (scheduled + heartbeat + force)
 - MQTT dispatch path stays disabled in active runtime path
