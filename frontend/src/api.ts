@@ -1,8 +1,13 @@
 import type {
+  DataSignalSeries,
+  DataSignalSeriesResolution,
+  EosAutoRunPreset,
+  EosAutoRunUpdateResponse,
   EosForceRunResponse,
   EosPredictionRefreshResponse,
   EosPredictionRefreshScope,
   EosOutputCurrentItem,
+  EosOutputSignalsBundle,
   EosOutputTimelineItem,
   EosRunPlausibility,
   EosRunDetail,
@@ -12,16 +17,14 @@ import type {
   EosRunSolution,
   EosRunSummary,
   EosRuntime,
-  OutputDispatchEvent,
-  OutputDispatchForceResponse,
-  OutputTarget,
-  OutputTargetCreatePayload,
-  OutputTargetUpdatePayload,
   SetupExportPackageV2,
   SetupField,
   SetupFieldPatchResponse,
   SetupFieldSource,
   SetupImportResponse,
+  SetupLayout,
+  SetupEntityMutatePayload,
+  SetupEntityMutateResponse,
   SetupReadiness,
   StatusResponse,
 } from "./types";
@@ -34,21 +37,35 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
     },
     ...init,
   });
+  const responseText = response.status === 204 ? "" : await response.text();
+  const contentType = response.headers.get("content-type") ?? "";
+
+  const parseJson = (): unknown | null => {
+    if (responseText.trim() === "") {
+      return null;
+    }
+    try {
+      return JSON.parse(responseText) as unknown;
+    } catch {
+      return null;
+    }
+  };
 
   if (!response.ok) {
     let errorText = `API request failed with status ${response.status}`;
-    try {
-      const payload = await response.json();
-      if (typeof payload?.detail === "string") {
-        errorText = payload.detail;
+    const payload = parseJson();
+    if (payload !== null) {
+      const payloadRecord =
+        typeof payload === "object" && payload !== null
+          ? (payload as Record<string, unknown>)
+          : null;
+      if (typeof payloadRecord?.detail === "string") {
+        errorText = payloadRecord.detail;
       } else {
         errorText = JSON.stringify(payload);
       }
-    } catch {
-      const payload = await response.text();
-      if (payload.trim() !== "") {
-        errorText = payload;
-      }
+    } else if (responseText.trim() !== "") {
+      errorText = responseText;
     }
     throw new Error(errorText);
   }
@@ -57,12 +74,14 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
     return undefined as T;
   }
 
-  const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
     return undefined as T;
   }
-
-  return (await response.json()) as T;
+  const payload = parseJson();
+  if (payload === null) {
+    throw new Error("API returned invalid JSON");
+  }
+  return payload as T;
 }
 
 export function getSetupFields(): Promise<SetupField[]> {
@@ -75,6 +94,17 @@ export function patchSetupFields(
   return apiRequest<SetupFieldPatchResponse>("/api/setup/fields", {
     method: "PATCH",
     body: JSON.stringify({ updates }),
+  });
+}
+
+export function getSetupLayout(): Promise<SetupLayout> {
+  return apiRequest<SetupLayout>("/api/setup/layout");
+}
+
+export function mutateSetupEntity(payload: SetupEntityMutatePayload): Promise<SetupEntityMutateResponse> {
+  return apiRequest<SetupEntityMutateResponse>("/api/setup/entities/mutate", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 
@@ -104,8 +134,29 @@ export function getStatus(): Promise<StatusResponse> {
   return apiRequest<StatusResponse>("/status");
 }
 
+export function getDataSignalSeries(params: {
+  signalKey: string;
+  from: string;
+  to: string;
+  resolution?: DataSignalSeriesResolution;
+}): Promise<DataSignalSeries> {
+  const query = new URLSearchParams();
+  query.set("signal_key", params.signalKey);
+  query.set("from", params.from);
+  query.set("to", params.to);
+  query.set("resolution", params.resolution ?? "raw");
+  return apiRequest<DataSignalSeries>(`/api/data/series?${query.toString()}`);
+}
+
 export function getEosRuntime(): Promise<EosRuntime> {
   return apiRequest<EosRuntime>("/api/eos/runtime");
+}
+
+export function putEosAutoRunPreset(preset: EosAutoRunPreset): Promise<EosAutoRunUpdateResponse> {
+  return apiRequest<EosAutoRunUpdateResponse>("/api/eos/runtime/auto-run", {
+    method: "PUT",
+    body: JSON.stringify({ preset }),
+  });
 }
 
 export function forceEosRun(): Promise<EosForceRunResponse> {
@@ -173,48 +224,15 @@ export function getEosOutputsTimeline(params?: {
   return apiRequest<EosOutputTimelineItem[]>(`/api/eos/outputs/timeline${suffix ? `?${suffix}` : ""}`);
 }
 
-export function getEosOutputEvents(params?: {
+export function getEosOutputSignals(params?: {
   runId?: number;
-  resourceId?: string;
-  limit?: number;
-}): Promise<OutputDispatchEvent[]> {
+}): Promise<EosOutputSignalsBundle> {
   const query = new URLSearchParams();
   if (params?.runId !== undefined) {
     query.set("run_id", String(params.runId));
   }
-  if (params?.resourceId) {
-    query.set("resource_id", params.resourceId);
-  }
-  if (params?.limit !== undefined) {
-    query.set("limit", String(params.limit));
-  }
   const suffix = query.toString();
-  return apiRequest<OutputDispatchEvent[]>(`/api/eos/outputs/events${suffix ? `?${suffix}` : ""}`);
-}
-
-export function forceEosOutputDispatch(resourceIds?: string[]): Promise<OutputDispatchForceResponse> {
-  return apiRequest<OutputDispatchForceResponse>("/api/eos/outputs/dispatch/force", {
-    method: "POST",
-    body: JSON.stringify({ resource_ids: resourceIds && resourceIds.length > 0 ? resourceIds : null }),
-  });
-}
-
-export function getOutputTargets(): Promise<OutputTarget[]> {
-  return apiRequest<OutputTarget[]>("/api/eos/output-targets");
-}
-
-export function createOutputTarget(payload: OutputTargetCreatePayload): Promise<OutputTarget> {
-  return apiRequest<OutputTarget>("/api/eos/output-targets", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function updateOutputTarget(targetId: number, payload: OutputTargetUpdatePayload): Promise<OutputTarget> {
-  return apiRequest<OutputTarget>(`/api/eos/output-targets/${targetId}`, {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  });
+  return apiRequest<EosOutputSignalsBundle>(`/api/eos/output-signals${suffix ? `?${suffix}` : ""}`);
 }
 
 export function getEosRunPlausibility(runId: number): Promise<EosRunPlausibility> {

@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  createOutputTarget,
-  forceEosOutputDispatch,
   forceEosRun,
-  getEosOutputEvents,
   getEosOutputsCurrent,
+  getEosOutputSignals,
   getEosOutputsTimeline,
   getEosRunContext,
   getEosRunPredictionSeries,
@@ -15,20 +13,24 @@ import {
   getEosRuns,
   getEosRunSolution,
   getEosRuntime,
-  getOutputTargets,
   getSetupExport,
   getSetupFields,
+  getSetupLayout,
   getSetupReadiness,
   getStatus,
+  mutateSetupEntity,
   patchSetupFields,
   postSetupImport,
+  putEosAutoRunPreset,
   refreshEosPredictions,
-  updateOutputTarget,
 } from "./api";
 import { OutputChartsPanel } from "./outputCharts";
 import type {
+  EosAutoRunPreset,
   EosPredictionRefreshScope,
   EosOutputCurrentItem,
+  EosOutputSignalItem,
+  EosOutputSignalsBundle,
   EosOutputTimelineItem,
   EosRunPlausibility,
   EosRunPlan,
@@ -37,9 +39,9 @@ import type {
   EosRunSolution,
   EosRunSummary,
   EosRuntime,
-  OutputDispatchEvent,
-  OutputTarget,
+  SetupEntityMutatePayload,
   SetupField,
+  SetupLayout,
   SetupReadiness,
   StatusResponse,
 } from "./types";
@@ -57,15 +59,21 @@ type RunPredictionMetrics = {
   intervalMinutes: number | null;
   minPriceCt: number | null;
   maxPriceCt: number | null;
-  targetPredictionHours: number | null;
-  targetHistoricHours: number | null;
-  targetOptimizationHours: number | null;
+  desiredPredictionHours: number | null;
+  desiredHistoricHours: number | null;
+  desiredOptimizationHours: number | null;
+  effectivePredictionHours: number | null;
+  effectiveHistoricHours: number | null;
+  effectiveOptimizationHours: number | null;
 };
 
 type RunTargetMetrics = {
-  targetPredictionHours: number | null;
-  targetHistoricHours: number | null;
-  targetOptimizationHours: number | null;
+  desiredPredictionHours: number | null;
+  desiredHistoricHours: number | null;
+  desiredOptimizationHours: number | null;
+  effectivePredictionHours: number | null;
+  effectiveHistoricHours: number | null;
+  effectiveOptimizationHours: number | null;
 };
 
 const AUTOSAVE_MS = 1500;
@@ -73,6 +81,45 @@ const PREDICTION_HOURS_FIELD_ID = "param.prediction.hours";
 const PREDICTION_HISTORIC_HOURS_FIELD_ID = "param.prediction.historic_hours";
 const OPTIMIZATION_HOURS_FIELD_ID = "param.optimization.hours";
 const OPTIMIZATION_HORIZON_HOURS_FIELD_ID = "param.optimization.horizon_hours";
+const DETAILS_OPEN_STATE_STORAGE_KEY = "eos-webapp.details-open.v1";
+const PREDICTION_HISTORIC_MAX_HOURS = 24 * 7 * 4; // 4 Wochen
+const RUN_METRICS_RETRY_INTERVAL_MS = 15000;
+const RUN_METRICS_RETRY_MAX_ATTEMPTS = 6;
+const REFRESH_ALL_POLL_MS = 15000;
+const RUN_DETAILS_POLL_MS = 15000;
+const OUTPUT_SIGNALS_POLL_MS = 5000;
+const RUN_CENTER_MINIMAL = false;
+const AUTO_RUN_PRESET_OPTIONS: Array<{ value: EosAutoRunPreset; label: string }> = [
+  { value: "off", label: "off" },
+  { value: "15m", label: "15min" },
+  { value: "30m", label: "30min" },
+  { value: "60m", label: "60min" },
+];
+
+function loadDetailsOpenState(): Record<string, boolean> {
+  if (typeof window === "undefined") {
+    return {};
+  }
+  try {
+    const raw = window.localStorage.getItem(DETAILS_OPEN_STATE_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    const state: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "boolean") {
+        state[key] = value;
+      }
+    }
+    return state;
+  } catch {
+    return {};
+  }
+}
 
 function toInputString(field: SetupField): string {
   const value = field.current_value;
@@ -271,9 +318,12 @@ function extractRunPredictionMetrics(solutionPayload: unknown): RunPredictionMet
     intervalMinutes,
     minPriceCt: pricedRows.length > 0 ? Math.min(...pricedRows) : null,
     maxPriceCt: pricedRows.length > 0 ? Math.max(...pricedRows) : null,
-    targetPredictionHours: null,
-    targetHistoricHours: null,
-    targetOptimizationHours: null,
+    desiredPredictionHours: null,
+    desiredHistoricHours: null,
+    desiredOptimizationHours: null,
+    effectivePredictionHours: null,
+    effectiveHistoricHours: null,
+    effectiveOptimizationHours: null,
   };
 }
 
@@ -282,29 +332,50 @@ function extractRunTargetMetrics(contextPayload: unknown): RunTargetMetrics | nu
   if (!root) {
     return null;
   }
+  const parameterPayload = asObject(root.parameter_payload_json);
   const runtimeSnapshot = asObject(root.runtime_config_snapshot_json);
   const assembledInput = asObject(root.assembled_eos_input_json);
-  const source = runtimeSnapshot ?? assembledInput;
-  if (!source) {
-    return null;
-  }
+  const assembledRuntime = asObject(assembledInput?.runtime_config);
 
-  const prediction = asObject(source.prediction);
-  const optimization = asObject(source.optimization);
-  const targetPredictionHours = toFiniteNumber(prediction?.hours);
-  const targetHistoricHours = toFiniteNumber(prediction?.historic_hours);
-  const targetOptimizationHours =
-    toFiniteNumber(optimization?.horizon_hours) ??
-    toFiniteNumber(optimization?.hours);
+  const desiredSource = parameterPayload ?? runtimeSnapshot ?? assembledRuntime;
+  const effectiveSource = runtimeSnapshot ?? assembledRuntime;
 
-  if (targetPredictionHours === null && targetHistoricHours === null && targetOptimizationHours === null) {
+  const desired = extractTargetHours(desiredSource);
+  const effective = extractTargetHours(effectiveSource);
+  if (
+    desired.predictionHours === null &&
+    desired.historicHours === null &&
+    desired.optimizationHours === null &&
+    effective.predictionHours === null &&
+    effective.historicHours === null &&
+    effective.optimizationHours === null
+  ) {
     return null;
   }
 
   return {
-    targetPredictionHours,
-    targetHistoricHours,
-    targetOptimizationHours,
+    desiredPredictionHours: desired.predictionHours,
+    desiredHistoricHours: desired.historicHours,
+    desiredOptimizationHours: desired.optimizationHours,
+    effectivePredictionHours: effective.predictionHours,
+    effectiveHistoricHours: effective.historicHours,
+    effectiveOptimizationHours: effective.optimizationHours,
+  };
+}
+
+function extractTargetHours(source: Record<string, unknown> | null): {
+  predictionHours: number | null;
+  historicHours: number | null;
+  optimizationHours: number | null;
+} {
+  const prediction = asObject(source?.prediction);
+  const optimization = asObject(source?.optimization);
+  return {
+    predictionHours: toFiniteNumber(prediction?.hours),
+    historicHours: toFiniteNumber(prediction?.historic_hours),
+    optimizationHours:
+      toFiniteNumber(optimization?.horizon_hours) ??
+      toFiniteNumber(optimization?.hours),
   };
 }
 
@@ -322,9 +393,12 @@ function mergeRunMetrics(
     intervalMinutes: predictionMetrics?.intervalMinutes ?? null,
     minPriceCt: predictionMetrics?.minPriceCt ?? null,
     maxPriceCt: predictionMetrics?.maxPriceCt ?? null,
-    targetPredictionHours: targetMetrics?.targetPredictionHours ?? null,
-    targetHistoricHours: targetMetrics?.targetHistoricHours ?? null,
-    targetOptimizationHours: targetMetrics?.targetOptimizationHours ?? null,
+    desiredPredictionHours: targetMetrics?.desiredPredictionHours ?? null,
+    desiredHistoricHours: targetMetrics?.desiredHistoricHours ?? null,
+    desiredOptimizationHours: targetMetrics?.desiredOptimizationHours ?? null,
+    effectivePredictionHours: targetMetrics?.effectivePredictionHours ?? null,
+    effectiveHistoricHours: targetMetrics?.effectiveHistoricHours ?? null,
+    effectiveOptimizationHours: targetMetrics?.effectiveOptimizationHours ?? null,
   };
 }
 
@@ -346,17 +420,31 @@ function formatRunMetricsLabel(
     return parts.join(" | ");
   }
 
-  const targetHours =
-    metrics.targetPredictionHours ??
-    metrics.targetOptimizationHours ??
+  const desiredTargetHours =
+    metrics.desiredPredictionHours ??
+    metrics.desiredOptimizationHours ??
+    metrics.effectivePredictionHours ??
+    metrics.effectiveOptimizationHours ??
     fallbackHorizonHours;
-  parts.push(`Ziel ${Math.max(1, Math.round(targetHours))}h`);
+  parts.push(`Ziel ${Math.max(1, Math.round(desiredTargetHours))}h`);
 
   if (metrics.horizonHours !== null) {
     parts.push(`Effektiv ${metrics.horizonHours.toFixed(1)}h`);
   }
-  if (metrics.targetHistoricHours !== null) {
-    parts.push(`Hist ${Math.max(1, Math.round(metrics.targetHistoricHours))}h`);
+
+  const effectiveConfiguredHours =
+    metrics.effectivePredictionHours ??
+    metrics.effectiveOptimizationHours;
+  if (
+    effectiveConfiguredHours !== null &&
+    Math.max(1, Math.round(effectiveConfiguredHours)) !== Math.max(1, Math.round(desiredTargetHours))
+  ) {
+    parts.push(`Cap ${Math.max(1, Math.round(effectiveConfiguredHours))}h`);
+  }
+
+  const historicHours = metrics.desiredHistoricHours ?? metrics.effectiveHistoricHours;
+  if (historicHours !== null) {
+    parts.push(`Hist ${Math.max(1, Math.round(historicHours))}h`);
   }
   if (metrics.pointCount !== null) {
     parts.push(`${metrics.pointCount} Punkte`);
@@ -381,17 +469,6 @@ function runStatusChipClass(statusValue: string): string {
   return "chip-danger";
 }
 
-function dispatchStatusChipClass(statusValue: string): string {
-  const status = statusValue.toLowerCase();
-  if (status === "sent") {
-    return "chip-ok";
-  }
-  if (status === "blocked" || status === "retrying" || status === "skipped_no_target") {
-    return "chip-warning";
-  }
-  return "chip-danger";
-}
-
 function runSourceLabel(triggerSource: string): string {
   if (triggerSource === "force_run") {
     return "Force";
@@ -405,12 +482,50 @@ function runSourceLabel(triggerSource: string): string {
   return triggerSource;
 }
 
-function normalizeResourceId(resourceId: string | null | undefined): string {
-  return (resourceId ?? "").trim().toLowerCase();
+function formatSignedKw(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "-";
+  }
+  const abs = Math.abs(value);
+  const formatted = abs >= 10 ? abs.toFixed(2) : abs.toFixed(3);
+  const compact = formatted.replace(/\.?0+$/, "");
+  if (value > 0) {
+    return `+${compact}`;
+  }
+  if (value < 0) {
+    return `-${compact}`;
+  }
+  return "0";
 }
 
-function isHomeApplianceResourceId(resourceId: string | null | undefined): boolean {
-  return /^homeappliance\d+$/.test(normalizeResourceId(resourceId));
+function outputSignalStatusChipClass(statusValue: string): string {
+  const status = statusValue.toLowerCase();
+  if (status === "ok") {
+    return "chip-ok";
+  }
+  if (status === "missing_max_power") {
+    return "chip-warning";
+  }
+  return "chip-neutral";
+}
+
+function shouldRetryRunMetricsLoad(
+  run: EosRunSummary | undefined,
+  metrics: RunPredictionMetrics | null | undefined,
+): boolean {
+  if (metrics !== null) {
+    return false;
+  }
+  if (!run) {
+    return false;
+  }
+  if (run.trigger_source === "prediction_refresh") {
+    return false;
+  }
+  if (run.status === "running") {
+    return false;
+  }
+  return true;
 }
 
 function buildRunHints(run: EosRunDetail | null, plan: EosRunPlan | null, solution: EosRunSolution | null): string[] {
@@ -582,6 +697,8 @@ function fieldStatusClass(field: SetupField, draft: DraftState | undefined): str
 
 export default function App() {
   const [fields, setFields] = useState<SetupField[]>([]);
+  const [detailsOpenState, setDetailsOpenState] = useState<Record<string, boolean>>(() => loadDetailsOpenState());
+  const [setupLayout, setSetupLayout] = useState<SetupLayout | null>(null);
   const [readiness, setReadiness] = useState<SetupReadiness | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [runtime, setRuntime] = useState<EosRuntime | null>(null);
@@ -593,33 +710,21 @@ export default function App() {
   const [selectedRunPredictionSeries, setSelectedRunPredictionSeries] = useState<EosRunPredictionSeries | null>(null);
   const [outputCurrent, setOutputCurrent] = useState<EosOutputCurrentItem[]>([]);
   const [outputTimeline, setOutputTimeline] = useState<EosOutputTimelineItem[]>([]);
-  const [outputEvents, setOutputEvents] = useState<OutputDispatchEvent[]>([]);
-  const [outputTargets, setOutputTargets] = useState<OutputTarget[]>([]);
+  const [outputSignalsBundle, setOutputSignalsBundle] = useState<EosOutputSignalsBundle | null>(null);
   const [plausibility, setPlausibility] = useState<EosRunPlausibility | null>(null);
-  const [isForcingDispatch, setIsForcingDispatch] = useState(false);
-  const [dispatchMessage, setDispatchMessage] = useState<string | null>(null);
-  const [targetEditId, setTargetEditId] = useState<number | null>(null);
-  const [targetForm, setTargetForm] = useState({
-    resource_id: "",
-    webhook_url: "",
-    method: "POST",
-    enabled: true,
-    timeout_seconds: "10",
-    retry_max: "2",
-    headers_json: "{}",
-    payload_template_json: "",
-  });
   const [importText, setImportText] = useState("");
   const [importFeedback, setImportFeedback] = useState<string | null>(null);
-  const [runtimeMessage, setRuntimeMessage] = useState<string | null>(null);
+  const [runtimeFeedback, setRuntimeFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [isForcingRun, setIsForcingRun] = useState(false);
   const [isRefreshingPrediction, setIsRefreshingPrediction] = useState<EosPredictionRefreshScope | null>(null);
+  const [isSavingAutoRunPreset, setIsSavingAutoRunPreset] = useState(false);
   const [isSavingHorizon, setIsSavingHorizon] = useState(false);
+  const [isMutatingSetupEntity, setIsMutatingSetupEntity] = useState(false);
+  const [setupMutationFeedback, setSetupMutationFeedback] = useState<string | null>(null);
   const [horizonHoursDraft, setHorizonHoursDraft] = useState("48");
+  const [horizonFeedback, setHorizonFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [runNowMs, setRunNowMs] = useState<number>(() => Date.now());
-  const [runSourceFilter, setRunSourceFilter] = useState<"all" | "automatic" | "force_run" | "prediction_refresh">("all");
-  const [runStatusFilter, setRunStatusFilter] = useState<"all" | "running" | "success" | "partial" | "failed">("all");
   const [runMetricsById, setRunMetricsById] = useState<Record<number, RunPredictionMetrics | null>>({});
 
   const [drafts, setDrafts] = useState<Record<string, DraftState>>({});
@@ -627,6 +732,7 @@ export default function App() {
   const fieldsRef = useRef(fields);
   const timersRef = useRef<Record<string, number>>({});
   const runMetricsLoadingRef = useRef<Set<number>>(new Set());
+  const runMetricsRetryStateRef = useRef<Map<number, { attempts: number; lastAttemptMs: number }>>(new Map());
 
   useEffect(() => {
     draftsRef.current = drafts;
@@ -636,26 +742,49 @@ export default function App() {
     fieldsRef.current = fields;
   }, [fields]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      window.localStorage.setItem(DETAILS_OPEN_STATE_STORAGE_KEY, JSON.stringify(detailsOpenState));
+    } catch {
+      // ignore localStorage write errors
+    }
+  }, [detailsOpenState]);
+
+  const setDetailsOpen = useCallback((key: string, open: boolean) => {
+    setDetailsOpenState((current) => {
+      if (current[key] === open) {
+        return current;
+      }
+      return {
+        ...current,
+        [key]: open,
+      };
+    });
+  }, []);
+
   const loadSetup = useCallback(async () => {
-    const [fieldsData, readinessData, statusData] = await Promise.all([
+    const [fieldsData, layoutData, readinessData, statusData] = await Promise.all([
       getSetupFields(),
+      getSetupLayout(),
       getSetupReadiness(),
       getStatus(),
     ]);
     setFields(fieldsData);
+    setSetupLayout(layoutData);
     setReadiness(readinessData);
     setStatus(statusData);
   }, []);
 
   const loadRunCenter = useCallback(async () => {
-    const [runtimeData, runsData, targetsData] = await Promise.all([
+    const [runtimeData, runsData] = await Promise.all([
       getEosRuntime(),
       getEosRuns(),
-      getOutputTargets(),
     ]);
     setRuntime(runtimeData);
     setRuns(runsData);
-    setOutputTargets(targetsData);
     if (runsData.length === 0) {
       setSelectedRunId(null);
       setSelectedRunDetail(null);
@@ -664,8 +793,12 @@ export default function App() {
       setSelectedRunPredictionSeries(null);
       setOutputCurrent([]);
       setOutputTimeline([]);
-      setOutputEvents([]);
+      setOutputSignalsBundle(null);
       setPlausibility(null);
+      return;
+    }
+    if (RUN_CENTER_MINIMAL) {
+      setSelectedRunId(runsData[0].id);
       return;
     }
     setSelectedRunId((current) => {
@@ -678,13 +811,12 @@ export default function App() {
   }, []);
 
   const loadRunDetails = useCallback(async (runId: number) => {
-    const [detailData, planData, solutionData, currentData, timelineData, eventsData, plausibilityData, predictionSeriesData] = await Promise.all([
+    const [detailData, planData, solutionData, currentData, timelineData, plausibilityData, predictionSeriesData] = await Promise.all([
       getEosRunDetail(runId),
       getEosRunPlan(runId),
       getEosRunSolution(runId),
       getEosOutputsCurrent(runId),
       getEosOutputsTimeline({ runId }),
-      getEosOutputEvents({ runId, limit: 200 }),
       getEosRunPlausibility(runId),
       getEosRunPredictionSeries(runId).catch(() => null),
     ]);
@@ -694,8 +826,12 @@ export default function App() {
     setSelectedRunPredictionSeries(predictionSeriesData);
     setOutputCurrent(currentData);
     setOutputTimeline(timelineData);
-    setOutputEvents(eventsData);
     setPlausibility(plausibilityData);
+  }, []);
+
+  const loadOutputSignals = useCallback(async () => {
+    const signalsData = await getEosOutputSignals();
+    setOutputSignalsBundle(signalsData);
   }, []);
 
   const refreshAll = useCallback(async () => {
@@ -711,7 +847,7 @@ export default function App() {
     void refreshAll();
     const interval = window.setInterval(() => {
       void refreshAll();
-    }, 15000);
+    }, REFRESH_ALL_POLL_MS);
     return () => {
       window.clearInterval(interval);
       for (const timer of Object.values(timersRef.current)) {
@@ -728,6 +864,34 @@ export default function App() {
       setGlobalError(error instanceof Error ? error.message : String(error));
     });
   }, [selectedRunId, loadRunDetails]);
+
+  useEffect(() => {
+    if (selectedRunId === null) {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      void loadRunDetails(selectedRunId).catch((error: unknown) => {
+        setGlobalError(error instanceof Error ? error.message : String(error));
+      });
+    }, RUN_DETAILS_POLL_MS);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [selectedRunId, loadRunDetails]);
+
+  useEffect(() => {
+    void loadOutputSignals().catch((error: unknown) => {
+      setGlobalError(error instanceof Error ? error.message : String(error));
+    });
+    const interval = window.setInterval(() => {
+      void loadOutputSignals().catch((error: unknown) => {
+        setGlobalError(error instanceof Error ? error.message : String(error));
+      });
+    }, OUTPUT_SIGNALS_POLL_MS);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [loadOutputSignals]);
 
   const saveField = useCallback(async (fieldId: string) => {
     const field = fieldsRef.current.find((item) => item.field_id === fieldId);
@@ -769,8 +933,12 @@ export default function App() {
         },
       }));
 
-      const readinessData = await getSetupReadiness();
+      const [readinessData, layoutData] = await Promise.all([
+        getSetupReadiness(),
+        getSetupLayout(),
+      ]);
       setReadiness(readinessData);
+      setSetupLayout(layoutData);
       setGlobalError(null);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -862,12 +1030,17 @@ export default function App() {
 
   const triggerForceRun = useCallback(async () => {
     setIsForcingRun(true);
+    setRuntimeFeedback(null);
     try {
       const response = await forceEosRun();
-      setRuntimeMessage(`Force-Run gestartet (run_id=${response.run_id}).`);
+      setRuntimeFeedback({ type: "success", message: `Force Run gestartet (#${response.run_id}).` });
       await loadRunCenter();
       setGlobalError(null);
     } catch (error) {
+      setRuntimeFeedback({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
       setGlobalError(error instanceof Error ? error.message : String(error));
     } finally {
       setIsForcingRun(false);
@@ -877,14 +1050,21 @@ export default function App() {
   const triggerPredictionRefresh = useCallback(
     async (scope: EosPredictionRefreshScope) => {
       setIsRefreshingPrediction(scope);
+      setRuntimeFeedback(null);
       try {
         const response = await refreshEosPredictions(scope);
-        setRuntimeMessage(
-          `Prediction-Refresh (${scope}) gestartet (run_id=${response.run_id}). Nach Abschluss kann ein Force-Run gestartet werden.`,
-        );
+        const scopeLabel = scope === "pv" ? "PV" : scope === "prices" ? "Preis" : scope === "all" ? "All" : "Load";
+        setRuntimeFeedback({
+          type: "success",
+          message: `${scopeLabel} Refresh gestartet (#${response.run_id}).`,
+        });
         await loadRunCenter();
         setGlobalError(null);
       } catch (error) {
+        setRuntimeFeedback({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
         setGlobalError(error instanceof Error ? error.message : String(error));
       } finally {
         setIsRefreshingPrediction(null);
@@ -893,109 +1073,28 @@ export default function App() {
     [loadRunCenter],
   );
 
-  const triggerForceDispatch = useCallback(async () => {
-    setIsForcingDispatch(true);
-    try {
-      const response = await forceEosOutputDispatch();
-      setDispatchMessage(response.message);
-      if (selectedRunId !== null) {
-        await loadRunDetails(selectedRunId);
-      } else {
-        await loadRunCenter();
-      }
-      setGlobalError(null);
-    } catch (error) {
-      setGlobalError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setIsForcingDispatch(false);
-    }
-  }, [loadRunCenter, loadRunDetails, selectedRunId]);
-
-  const submitOutputTarget = useCallback(async () => {
-    try {
-      const timeoutSeconds = Number.parseInt(targetForm.timeout_seconds, 10);
-      const retryMax = Number.parseInt(targetForm.retry_max, 10);
-      const headersJson = targetForm.headers_json.trim() ? JSON.parse(targetForm.headers_json) : {};
-      const payloadTemplateJson = targetForm.payload_template_json.trim()
-        ? JSON.parse(targetForm.payload_template_json)
-        : null;
-
-      const payload = {
-        resource_id: targetForm.resource_id.trim(),
-        webhook_url: targetForm.webhook_url.trim(),
-        method: targetForm.method.trim().toUpperCase(),
-        enabled: targetForm.enabled,
-        timeout_seconds: Number.isFinite(timeoutSeconds) ? timeoutSeconds : 10,
-        retry_max: Number.isFinite(retryMax) ? retryMax : 2,
-        headers_json: headersJson,
-        payload_template_json: payloadTemplateJson,
-      };
-
-      if (targetEditId === null) {
-        await createOutputTarget(payload);
-      } else {
-        await updateOutputTarget(targetEditId, payload);
-      }
-
-      setTargetEditId(null);
-      setTargetForm({
-        resource_id: "",
-        webhook_url: "",
-        method: "POST",
-        enabled: true,
-        timeout_seconds: "10",
-        retry_max: "2",
-        headers_json: "{}",
-        payload_template_json: "",
-      });
-      const targets = await getOutputTargets();
-      setOutputTargets(targets);
-      setDispatchMessage("Output Target gespeichert.");
-      setGlobalError(null);
-    } catch (error) {
-      setGlobalError(error instanceof Error ? error.message : String(error));
-    }
-  }, [targetEditId, targetForm]);
-
-  const editOutputTarget = useCallback((target: OutputTarget) => {
-    setTargetEditId(target.id);
-    setTargetForm({
-      resource_id: target.resource_id,
-      webhook_url: target.webhook_url,
-      method: target.method,
-      enabled: target.enabled,
-      timeout_seconds: String(target.timeout_seconds),
-      retry_max: String(target.retry_max),
-      headers_json: JSON.stringify(target.headers_json ?? {}, null, 2),
-      payload_template_json: target.payload_template_json
-        ? JSON.stringify(target.payload_template_json, null, 2)
-        : "",
-    });
-  }, []);
-
-  const toggleOutputTargetEnabled = useCallback(
-    async (target: OutputTarget) => {
+  const handleSetupEntityMutation = useCallback(
+    async (payload: SetupEntityMutatePayload) => {
+      setIsMutatingSetupEntity(true);
       try {
-        await updateOutputTarget(target.id, { enabled: !target.enabled });
-        const targets = await getOutputTargets();
-        setOutputTargets(targets);
-        if (selectedRunId !== null) {
-          await loadRunDetails(selectedRunId);
+        const result = await mutateSetupEntity(payload);
+        setSetupLayout(result.layout);
+        const warningText = result.warnings.length > 0 ? ` | Hinweise: ${result.warnings.join(" | ")}` : "";
+        setSetupMutationFeedback(`${result.message}${warningText}`);
+        await loadSetup();
+        if (result.status !== "saved") {
+          setGlobalError(result.message);
+          return;
         }
         setGlobalError(null);
       } catch (error) {
         setGlobalError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setIsMutatingSetupEntity(false);
       }
     },
-    [loadRunDetails, selectedRunId],
+    [loadSetup],
   );
-
-  const groupedFields = useMemo(() => {
-    const mandatory = fields.filter((field) => field.group === "mandatory");
-    const optional = fields.filter((field) => field.group === "optional");
-    const live = fields.filter((field) => field.group === "live");
-    return { mandatory, optional, live };
-  }, [fields]);
 
   const predictionHoursField = useMemo(
     () => fields.find((field) => field.field_id === PREDICTION_HOURS_FIELD_ID) ?? null,
@@ -1047,21 +1146,46 @@ export default function App() {
     );
   }, [runtime]);
 
-  const currentPredictionHours = useMemo(
-    () => toFiniteNumber(predictionHoursField?.current_value) ?? runtimePredictionHours,
-    [predictionHoursField, runtimePredictionHours],
+  const configuredPredictionHours = useMemo(
+    () => toFiniteNumber(predictionHoursField?.current_value),
+    [predictionHoursField],
   );
-  const currentPredictionHistoricHours = useMemo(
-    () => toFiniteNumber(predictionHistoricHoursField?.current_value),
-    [predictionHistoricHoursField],
-  );
-  const currentOptimizationHours = useMemo(
+  const configuredOptimizationHours = useMemo(
     () =>
       toFiniteNumber(optimizationHorizonHoursField?.current_value) ??
-      toFiniteNumber(optimizationHoursField?.current_value) ??
-      runtimeOptimizationHours,
-    [optimizationHorizonHoursField, optimizationHoursField, runtimeOptimizationHours],
+      toFiniteNumber(optimizationHoursField?.current_value),
+    [optimizationHorizonHoursField, optimizationHoursField],
   );
+  const configuredHorizonHours = useMemo(() => {
+    const configuredHours = configuredPredictionHours ?? configuredOptimizationHours;
+    if (configuredHours === null) {
+      return null;
+    }
+    return Math.max(1, Math.round(configuredHours));
+  }, [configuredOptimizationHours, configuredPredictionHours]);
+  const safeHorizonCapHours = useMemo(() => {
+    const capHours = toFiniteNumber(status?.config?.eos_visualize_safe_horizon_hours);
+    if (capHours === null || capHours <= 0) {
+      return null;
+    }
+    return Math.max(1, Math.round(capHours));
+  }, [status]);
+  const currentPredictionHours = useMemo(() => {
+    const hours = runtimePredictionHours ?? configuredPredictionHours;
+    if (hours === null) {
+      return null;
+    }
+    const normalized = Math.max(1, Math.round(hours));
+    return safeHorizonCapHours === null ? normalized : Math.min(normalized, safeHorizonCapHours);
+  }, [configuredPredictionHours, runtimePredictionHours, safeHorizonCapHours]);
+  const currentOptimizationHours = useMemo(() => {
+    const hours = runtimeOptimizationHours ?? configuredOptimizationHours;
+    if (hours === null) {
+      return null;
+    }
+    const normalized = Math.max(1, Math.round(hours));
+    return safeHorizonCapHours === null ? normalized : Math.min(normalized, safeHorizonCapHours);
+  }, [configuredOptimizationHours, runtimeOptimizationHours, safeHorizonCapHours]);
 
   const hasRunningRuns = useMemo(() => runs.some((run) => run.status === "running"), [runs]);
 
@@ -1081,24 +1205,45 @@ export default function App() {
       return;
     }
     const fallbackHours = 48;
-    const targetHours = Math.round(currentPredictionHours ?? currentOptimizationHours ?? fallbackHours);
+    const targetHours = Math.round(configuredHorizonHours ?? currentPredictionHours ?? currentOptimizationHours ?? fallbackHours);
     setHorizonHoursDraft(String(Math.max(1, targetHours)));
-  }, [currentOptimizationHours, currentPredictionHours, isSavingHorizon]);
+  }, [configuredHorizonHours, currentOptimizationHours, currentPredictionHours, isSavingHorizon]);
 
   const baseHorizonHours = useMemo(
     () => Math.max(1, Math.round(currentPredictionHours ?? currentOptimizationHours ?? 48)),
     [currentOptimizationHours, currentPredictionHours],
   );
+  const hasConfiguredHorizonMismatch = useMemo(() => {
+    if (
+      configuredPredictionHours !== null &&
+      Math.max(1, Math.round(configuredPredictionHours)) !== baseHorizonHours
+    ) {
+      return true;
+    }
+    if (
+      configuredOptimizationHours !== null &&
+      Math.max(1, Math.round(configuredOptimizationHours)) !== baseHorizonHours
+    ) {
+      return true;
+    }
+    return false;
+  }, [baseHorizonHours, configuredOptimizationHours, configuredPredictionHours]);
 
+  const configuredBaseHorizonHours = useMemo(
+    () => Math.max(1, Math.round(configuredHorizonHours ?? baseHorizonHours)),
+    [baseHorizonHours, configuredHorizonHours],
+  );
   const selectedHorizonHours = useMemo(
-    () => Math.max(1, Math.round(toFiniteNumber(horizonHoursDraft) ?? baseHorizonHours)),
-    [horizonHoursDraft, baseHorizonHours],
+    () => Math.max(1, Math.round(toFiniteNumber(horizonHoursDraft) ?? configuredBaseHorizonHours)),
+    [configuredBaseHorizonHours, horizonHoursDraft],
   );
   const horizonOptions = useMemo(() => {
     const base = [48, 72, 96];
-    const merged = new Set<number>([...base, selectedHorizonHours]);
-    return Array.from(merged).sort((left, right) => left - right);
-  }, [selectedHorizonHours]);
+    const merged = new Set<number>([...base, selectedHorizonHours, configuredBaseHorizonHours]);
+    return Array.from(merged)
+      .map((value) => Math.max(1, Math.round(value)))
+      .sort((left, right) => left - right);
+  }, [configuredBaseHorizonHours, selectedHorizonHours]);
   const horizonControlDisabled =
     (predictionHoursField === null &&
       optimizationHoursField === null &&
@@ -1106,8 +1251,6 @@ export default function App() {
     isSavingHorizon ||
     isForcingRun ||
     isRefreshingPrediction !== null;
-  const hasOptimizationHorizonControl =
-    optimizationHoursField !== null || optimizationHorizonHoursField !== null;
 
   const applyPredictionHorizon = useCallback(async (requestedHours?: number) => {
     if (
@@ -1116,18 +1259,15 @@ export default function App() {
       optimizationHoursField === null &&
       optimizationHorizonHoursField === null
     ) {
-      setGlobalError("Horizon-Felder sind aktuell nicht verfugbar.");
+      setHorizonFeedback({ type: "error", message: "Horizon-Felder sind aktuell nicht verfugbar." });
       return;
     }
 
-    const targetHours = Math.max(1, Math.round(requestedHours ?? selectedHorizonHours));
-    const historicBaselineHours = Math.max(
-      840,
-      Math.round(currentPredictionHistoricHours ?? 0),
-    );
+    const requestedTargetHours = Math.max(1, Math.round(requestedHours ?? selectedHorizonHours));
+    const targetHours = requestedTargetHours;
     const historicTargetHours = Math.max(
       targetHours,
-      Math.min(2160, Math.max(historicBaselineHours, targetHours * 10)),
+      PREDICTION_HISTORIC_MAX_HOURS,
     );
     const updates: Array<{ field_id: string; value: unknown; source: "ui" }> = [];
     if (predictionHoursField !== null) {
@@ -1159,11 +1299,13 @@ export default function App() {
     }
 
     if (updates.length === 0) {
-      setGlobalError("Keine passenden Horizon-Felder verfugbar.");
+      setHorizonFeedback({ type: "error", message: "Keine passenden Horizon-Felder verfugbar." });
       return;
     }
 
     setIsSavingHorizon(true);
+    setHorizonFeedback(null);
+    setHorizonHoursDraft(String(targetHours));
     try {
       const response = await patchSetupFields(updates);
       const rejected = response.results.filter((item) => item.status !== "saved");
@@ -1174,12 +1316,19 @@ export default function App() {
         throw new Error(details);
       }
       await Promise.all([loadSetup(), loadRunCenter()]);
-      setRuntimeMessage(
-        `Vorschau-Horizont gesetzt: prediction=${targetHours}h, historic=${historicTargetHours}h.`,
-      );
-      setGlobalError(null);
+      const capMessage =
+        safeHorizonCapHours !== null && requestedTargetHours > safeHorizonCapHours
+          ? ` Safety-Cap bleibt bei ${safeHorizonCapHours}h.`
+          : "";
+      setHorizonFeedback({
+        type: "success",
+        message: `Vorschau-Horizont gespeichert: ${targetHours}h.${capMessage}`,
+      });
     } catch (error) {
-      setGlobalError(error instanceof Error ? error.message : String(error));
+      setHorizonFeedback({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
     } finally {
       setIsSavingHorizon(false);
     }
@@ -1189,21 +1338,76 @@ export default function App() {
     optimizationHorizonHoursField,
     optimizationHoursField,
     predictionHoursField,
-    currentPredictionHistoricHours,
     predictionHistoricHoursField,
+    safeHorizonCapHours,
     selectedHorizonHours,
   ]);
 
   const handleHorizonSelectChange = useCallback(
     (rawValue: string) => {
-      const parsed = Math.max(1, Math.round(toFiniteNumber(rawValue) ?? baseHorizonHours));
+      const parsed = Math.max(1, Math.round(toFiniteNumber(rawValue) ?? configuredBaseHorizonHours));
       setHorizonHoursDraft(String(parsed));
-      if (parsed === baseHorizonHours) {
+      setHorizonFeedback(null);
+      if (parsed === configuredBaseHorizonHours && !hasConfiguredHorizonMismatch) {
         return;
       }
       void applyPredictionHorizon(parsed);
     },
-    [applyPredictionHorizon, baseHorizonHours],
+    [applyPredictionHorizon, configuredBaseHorizonHours, hasConfiguredHorizonMismatch],
+  );
+
+  const autoRunPresetValue = useMemo<EosAutoRunPreset>(() => {
+    const preset = runtime?.collector.auto_run_preset;
+    if (preset === "off" || preset === "15m" || preset === "30m" || preset === "60m") {
+      return preset;
+    }
+    return "off";
+  }, [runtime]);
+
+  const runtimeBusy = useMemo(
+    () => isForcingRun || isRefreshingPrediction !== null || Boolean(runtime?.collector.force_run_in_progress),
+    [isForcingRun, isRefreshingPrediction, runtime],
+  );
+
+  const autoRunControlDisabled =
+    isSavingAutoRunPreset ||
+    isForcingRun ||
+    isRefreshingPrediction !== null ||
+    Boolean(runtime?.collector.force_run_in_progress);
+
+  const applyAutoRunPreset = useCallback(
+    async (preset: EosAutoRunPreset) => {
+      setIsSavingAutoRunPreset(true);
+      setRuntimeFeedback(null);
+      try {
+        const response = await putEosAutoRunPreset(preset);
+        setRuntime(response.runtime);
+        const presetLabel =
+          AUTO_RUN_PRESET_OPTIONS.find((option) => option.value === response.preset)?.label ?? response.preset;
+        setRuntimeFeedback({ type: "success", message: `Auto-Run gespeichert: ${presetLabel}.` });
+        setGlobalError(null);
+      } catch (error) {
+        setRuntimeFeedback({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        setGlobalError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setIsSavingAutoRunPreset(false);
+      }
+    },
+    [],
+  );
+
+  const handleAutoRunPresetChange = useCallback(
+    (value: string) => {
+      const nextPreset = value as EosAutoRunPreset;
+      if (nextPreset === autoRunPresetValue) {
+        return;
+      }
+      void applyAutoRunPreset(nextPreset);
+    },
+    [applyAutoRunPreset, autoRunPresetValue],
   );
 
   const runStats = useMemo(() => {
@@ -1218,34 +1422,57 @@ export default function App() {
     return { total, automatic, forced, prediction, running, success, partial, failed };
   }, [runs]);
 
-  const filteredRuns = useMemo(() => {
-    return runs.filter((run) => {
-      if (runSourceFilter !== "all" && run.trigger_source !== runSourceFilter) {
-        return false;
-      }
-      if (runStatusFilter !== "all" && run.status !== runStatusFilter) {
-        return false;
-      }
-      return true;
-    });
-  }, [runs, runSourceFilter, runStatusFilter]);
-
   const runMetricCandidateIds = useMemo(
     () => {
-      const ids = filteredRuns.slice(0, 40).map((run) => run.id);
+      const ids = runs.slice(0, 40).map((run) => run.id);
       if (selectedRunId !== null && !ids.includes(selectedRunId)) {
         ids.push(selectedRunId);
       }
       return ids;
     },
-    [filteredRuns, selectedRunId],
+    [runs, selectedRunId],
   );
 
+  const runSummaryById = useMemo(() => {
+    const byId = new Map<number, EosRunSummary>();
+    for (const run of runs) {
+      byId.set(run.id, run);
+    }
+    return byId;
+  }, [runs]);
+
   useEffect(() => {
+    const existingRunIds = new Set(runs.map((run) => run.id));
+    for (const runId of runMetricsRetryStateRef.current.keys()) {
+      if (!existingRunIds.has(runId)) {
+        runMetricsRetryStateRef.current.delete(runId);
+      }
+    }
+  }, [runs]);
+
+  useEffect(() => {
+    const nowMs = Date.now();
     const missingIds = runMetricCandidateIds.filter(
-      (runId) =>
-        runMetricsById[runId] === undefined &&
-        !runMetricsLoadingRef.current.has(runId),
+      (runId) => {
+        if (runMetricsLoadingRef.current.has(runId)) {
+          return false;
+        }
+        const metrics = runMetricsById[runId];
+        if (metrics === undefined) {
+          return true;
+        }
+        if (!shouldRetryRunMetricsLoad(runSummaryById.get(runId), metrics)) {
+          return false;
+        }
+        const retryState = runMetricsRetryStateRef.current.get(runId);
+        if (!retryState) {
+          return true;
+        }
+        if (retryState.attempts >= RUN_METRICS_RETRY_MAX_ATTEMPTS) {
+          return false;
+        }
+        return nowMs - retryState.lastAttemptMs >= RUN_METRICS_RETRY_INTERVAL_MS;
+      },
     );
     if (missingIds.length === 0) {
       return;
@@ -1254,6 +1481,11 @@ export default function App() {
     let cancelled = false;
     for (const runId of missingIds) {
       runMetricsLoadingRef.current.add(runId);
+      const previousRetry = runMetricsRetryStateRef.current.get(runId);
+      runMetricsRetryStateRef.current.set(runId, {
+        attempts: (previousRetry?.attempts ?? 0) + 1,
+        lastAttemptMs: nowMs,
+      });
     }
 
     void (async () => {
@@ -1280,6 +1512,9 @@ export default function App() {
           const next: Record<number, RunPredictionMetrics | null> = { ...current };
           for (const [runId, metrics] of loaded) {
             next[runId] = metrics;
+            if (metrics !== null) {
+              runMetricsRetryStateRef.current.delete(runId);
+            }
           }
           return next;
         });
@@ -1295,7 +1530,7 @@ export default function App() {
         runMetricsLoadingRef.current.delete(runId);
       }
     };
-  }, [runMetricCandidateIds, runMetricsById]);
+  }, [runMetricCandidateIds, runMetricsById, runSummaryById]);
 
   const runHints = useMemo(
     () => buildRunHints(selectedRunDetail, plan, solution),
@@ -1306,111 +1541,57 @@ export default function App() {
     [selectedRunDetail, plan, solution],
   );
 
-  const configuredHomeApplianceResourceIds = useMemo(() => {
-    const configPayload = runtime?.config_payload;
-    if (configPayload === null || typeof configPayload !== "object" || Array.isArray(configPayload)) {
-      return new Set<string>();
+  const visibleOutputCurrent = useMemo(() => outputCurrent, [outputCurrent]);
+  const visibleOutputTimeline = useMemo(() => outputTimeline, [outputTimeline]);
+  const visibleOutputSignals = useMemo<EosOutputSignalItem[]>(() => {
+    if (!outputSignalsBundle?.signals) {
+      return [];
     }
-
-    const devicesValue = (configPayload as Record<string, unknown>).devices;
-    if (devicesValue === null || typeof devicesValue !== "object" || Array.isArray(devicesValue)) {
-      return new Set<string>();
+    return Object.values(outputSignalsBundle.signals).sort((left, right) =>
+      left.signal_key.localeCompare(right.signal_key),
+    );
+  }, [outputSignalsBundle]);
+  const outputSignalsCentralUrl = useMemo(() => {
+    const path = outputSignalsBundle?.central_http_path ?? "/eos/get/outputs";
+    if (typeof window === "undefined") {
+      return path;
     }
-
-    const devices = devicesValue as Record<string, unknown>;
-    const homeAppliances = Array.isArray(devices.home_appliances) ? devices.home_appliances : [];
-    const maxHomeAppliancesRaw = devices.max_home_appliances;
-    const parsedMaxHomeAppliances =
-      typeof maxHomeAppliancesRaw === "number"
-        ? maxHomeAppliancesRaw
-        : typeof maxHomeAppliancesRaw === "string" && maxHomeAppliancesRaw.trim() !== ""
-          ? Number(maxHomeAppliancesRaw)
-          : null;
-    const maxHomeAppliances =
-      parsedMaxHomeAppliances !== null && Number.isFinite(parsedMaxHomeAppliances)
-        ? Math.max(0, Math.floor(parsedMaxHomeAppliances))
-        : null;
-
-    if (maxHomeAppliances === 0) {
-      return new Set<string>();
+    return `${window.location.origin}${path}`;
+  }, [outputSignalsBundle]);
+  const outputSignalsCentralJsonUrl = useMemo(() => {
+    const path = outputSignalsBundle?.central_http_path ?? "/eos/get/outputs";
+    if (typeof window === "undefined") {
+      return `${path}?format=json`;
     }
+    return `${window.location.origin}${path}?format=json`;
+  }, [outputSignalsBundle]);
+  const outputSignalsFetchSummary = useMemo(() => {
+    if (visibleOutputSignals.length === 0) {
+      return null;
+    }
+    let latestFetchTs: string | null = null;
+    let latestFetchClient: string | null = null;
+    let latestFetchMs = -1;
+    let maxFetchCount = 0;
 
-    let configuredCount = 0;
-    for (const item of homeAppliances) {
-      if (item === null || typeof item !== "object" || Array.isArray(item)) {
-        continue;
+    for (const signal of visibleOutputSignals) {
+      const fetchMs = toTimestampMs(signal.last_fetch_ts);
+      if (fetchMs !== null && fetchMs >= latestFetchMs) {
+        latestFetchMs = fetchMs;
+        latestFetchTs = signal.last_fetch_ts;
+        latestFetchClient = signal.last_fetch_client;
       }
-      const deviceId = (item as Record<string, unknown>).device_id;
-      if (typeof deviceId === "string" && deviceId.trim() !== "") {
-        configuredCount += 1;
-      }
-    }
-
-    if (configuredCount === 0) {
-      return new Set<string>();
-    }
-
-    const usableCount = maxHomeAppliances === null ? configuredCount : Math.min(configuredCount, maxHomeAppliances);
-    const resourceIds = new Set<string>();
-    for (let index = 1; index <= usableCount; index += 1) {
-      resourceIds.add(`homeappliance${index}`);
-    }
-    return resourceIds;
-  }, [runtime]);
-
-  const enabledHomeApplianceTargets = useMemo(() => {
-    const resources = new Set<string>();
-    for (const target of outputTargets) {
-      if (!target.enabled || !isHomeApplianceResourceId(target.resource_id)) {
-        continue;
-      }
-      resources.add(normalizeResourceId(target.resource_id));
-    }
-    return resources;
-  }, [outputTargets]);
-
-  const showHomeApplianceOutputs = useMemo(() => {
-    if (configuredHomeApplianceResourceIds.size === 0) {
-      return false;
-    }
-    for (const resourceId of configuredHomeApplianceResourceIds) {
-      if (enabledHomeApplianceTargets.has(resourceId)) {
-        return true;
+      if (Number.isFinite(signal.fetch_count)) {
+        maxFetchCount = Math.max(maxFetchCount, Math.trunc(signal.fetch_count));
       }
     }
-    return false;
-  }, [configuredHomeApplianceResourceIds, enabledHomeApplianceTargets]);
 
-  const isVisibleOutputResource = useCallback(
-    (resourceId: string | null | undefined): boolean => {
-      if (!isHomeApplianceResourceId(resourceId)) {
-        return true;
-      }
-      return showHomeApplianceOutputs;
-    },
-    [showHomeApplianceOutputs],
-  );
-
-  const visibleOutputCurrent = useMemo(
-    () => outputCurrent.filter((item) => isVisibleOutputResource(item.resource_id)),
-    [outputCurrent, isVisibleOutputResource],
-  );
-
-  const visibleOutputTimeline = useMemo(
-    () => outputTimeline.filter((item) => isVisibleOutputResource(item.resource_id)),
-    [outputTimeline, isVisibleOutputResource],
-  );
-
-  const visibleOutputEvents = useMemo(
-    () =>
-      outputEvents.filter((event) => {
-        if (event.resource_id === null) {
-          return true;
-        }
-        return isVisibleOutputResource(event.resource_id);
-      }),
-    [outputEvents, isVisibleOutputResource],
-  );
+    return {
+      latestFetchTs,
+      latestFetchClient,
+      maxFetchCount,
+    };
+  }, [visibleOutputSignals]);
 
   return (
     <div className="app-shell">
@@ -1434,22 +1615,26 @@ export default function App() {
         <section className="pane">
           <h2>Inputs & Setup</h2>
           <p className="pane-copy">
-            Pflichtfelder sind rot, bis sie gültig gespeichert sind. Änderungen werden automatisch gespeichert.
+            Pflichtkategorien sind als <strong>MUSS</strong> markiert, optionale als <strong>KANN</strong>. Änderungen werden automatisch gespeichert.
+          </p>
+          <p className="meta-text">
+            Neue optionale Einträge werden per Klonen angelegt. Falls keine Quelle vorhanden ist, verwendet das Backend ein Template-Fallback.
+            Basisobjekte (z. B. Plane #1) sind nicht löschbar.
           </p>
 
           <div className="panel">
-            <h3>Pflichtfelder</h3>
-            <FieldList fields={groupedFields.mandatory} drafts={drafts} onChange={handleFieldChange} onBlur={flushSave} />
-          </div>
-
-          <div className="panel">
-            <h3>Optionale Felder</h3>
-            <FieldList fields={groupedFields.optional} drafts={drafts} onChange={handleFieldChange} onBlur={flushSave} />
-          </div>
-
-          <div className="panel">
-            <h3>Live-Signale</h3>
-            <FieldList fields={groupedFields.live} drafts={drafts} onChange={handleFieldChange} onBlur={flushSave} />
+            <h3>Kategorien</h3>
+            <SetupCategoriesView
+              layout={setupLayout}
+              drafts={drafts}
+              onChange={handleFieldChange}
+              onBlur={flushSave}
+              onMutateEntity={handleSetupEntityMutation}
+              mutatingEntity={isMutatingSetupEntity}
+              detailsOpenState={detailsOpenState}
+              onDetailsToggle={setDetailsOpen}
+            />
+            {setupMutationFeedback ? <p className="meta-text">{setupMutationFeedback}</p> : null}
           </div>
 
           <div className="panel">
@@ -1470,15 +1655,12 @@ export default function App() {
 
         <section className="pane">
           <h2>Run-Center</h2>
-          <p className="pane-copy">Runtime, Run-Typen, Historie und Fehleranalyse in Anwendersprache.</p>
+          {!RUN_CENTER_MINIMAL ? (
+            <p className="pane-copy">Runtime, Run-Typen, Historie und Fehleranalyse in Anwendersprache.</p>
+          ) : null}
 
           <div className="panel panel-highlight">
-            <div className="panel-head">
-              <h3>Vorschau-Horizont</h3>
-              <span className="chip chip-neutral">
-                aktuell: {baseHorizonHours}h
-              </span>
-            </div>
+            <h3>Vorschau-Horizont</h3>
             <div className="run-horizon-row">
               <select
                 value={horizonHoursDraft}
@@ -1491,91 +1673,88 @@ export default function App() {
                   </option>
                 ))}
               </select>
-              {isSavingHorizon ? <span className="chip chip-warning">speichere...</span> : null}
             </div>
-            <p className="meta-text">
-              Setzt `prediction.hours` und {predictionHistoricHoursField ? "`prediction.historic_hours`" : "optional die Historie"}
-              {hasOptimizationHorizonControl ? ", plus Optimierungs-Horizont" : ""}
-              {" "}fur nachfolgende Runs. Wert wird direkt beim Auswahlen gespeichert, Historic adaptiv mit Mindestziel `840h`.
-            </p>
-            {currentPredictionHistoricHours !== null ? (
-              <p className="meta-text">Aktuelle Prediction-Historie: {Math.max(1, Math.round(currentPredictionHistoricHours))}h</p>
-            ) : null}
-            {currentOptimizationHours !== null ? (
-              <p className="meta-text">Aktueller Optimierungs-Horizont: {Math.max(1, Math.round(currentOptimizationHours))}h</p>
+            {horizonFeedback ? (
+              <p className={horizonFeedback.type === "error" ? "field-error" : "meta-text"}>
+                {horizonFeedback.message}
+              </p>
             ) : null}
           </div>
 
-          <div className="panel">
-            <div className="panel-head">
-              <h3>Run-Steuerung & Runtime</h3>
-              <button
-                type="button"
-                onClick={triggerForceRun}
-                disabled={isForcingRun || isRefreshingPrediction !== null}
-              >
-                {isForcingRun ? "läuft..." : "Force Run"}
-              </button>
-            </div>
-            {runtimeMessage ? <p className="meta-text">{runtimeMessage}</p> : null}
-            <p className="meta-text">
-              `Prediction Refresh` aktualisiert nur Prognosen, `Force Run` startet sofort einen vollständigen Optimierungslauf,
-              `Auto`-Runs kommen vom EOS-Scheduler.
-            </p>
-            <div className="chip-row">
-              <span className={`chip ${runtime?.health_ok ? "chip-ok" : "chip-danger"}`}>
-                EOS: {runtime?.health_ok ? "ok" : "offline"}
-              </span>
-              <span className={`chip ${runtime?.collector.running ? "chip-ok" : "chip-warning"}`}>
-                Collector: {runtime?.collector.running ? "running" : "stopped"}
-              </span>
-              <span className={`chip ${runtime?.collector.aligned_scheduler_enabled ? "chip-ok" : "chip-neutral"}`}>
-                Scheduler: {runtime?.collector.aligned_scheduler_enabled ? "aktiv" : "aus"}
-              </span>
-            </div>
-            <ul className="plain-list">
-              <li>Letzter EOS-Run: <strong>{formatTimestamp(runtime?.collector.last_observed_eos_run_datetime ?? null)}</strong></li>
-              <li>Letzter erfolgreicher Sync: <strong>{formatTimestamp(runtime?.collector.last_successful_sync_ts ?? null)}</strong></li>
-              <li>Status-Logik: <strong>`success` vollstandig | `partial` teilw. Ergebnis | `failed` abgebrochen</strong></li>
-            </ul>
-            <div className="actions-row wrap">
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => void triggerPredictionRefresh("pv")}
-                disabled={isRefreshingPrediction !== null || isForcingRun}
-              >
-                {isRefreshingPrediction === "pv" ? "PV refresh..." : "PV Forecast Refresh"}
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => void triggerPredictionRefresh("prices")}
-                disabled={isRefreshingPrediction !== null || isForcingRun}
-              >
-                {isRefreshingPrediction === "prices" ? "Preis refresh..." : "Preis Refresh"}
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => void triggerPredictionRefresh("all")}
-                disabled={isRefreshingPrediction !== null || isForcingRun}
-              >
-                {isRefreshingPrediction === "all" ? "Prediction refresh..." : "Prediction All Refresh"}
-              </button>
-            </div>
-            <details>
-              <summary>Technische Runtime-Details</summary>
-              <ul className="plain-list">
-                <li>EOS Base URL: <code>{runtime?.eos_base_url ?? "-"}</code></li>
-                <li>Last Poll: <strong>{formatTimestamp(runtime?.collector.last_poll_ts ?? null)}</strong></li>
-                <li>Aligned Slots: <strong>{runtime?.collector.aligned_scheduler_minutes || "-"}</strong> (+{runtime?.collector.aligned_scheduler_delay_seconds ?? 0}s)</li>
-                <li>Nächster geplanter Slot: <strong>{formatTimestamp(runtime?.collector.aligned_scheduler_next_due_ts ?? null)}</strong></li>
-                <li>Letzter Scheduler-Trigger: <strong>{formatTimestamp(runtime?.collector.aligned_scheduler_last_trigger_ts ?? null)}</strong></li>
-                <li>Letzter Scheduler-Skip: <strong>{runtime?.collector.aligned_scheduler_last_skip_reason ?? "-"}</strong></li>
-              </ul>
-            </details>
-          </div>
+          {!RUN_CENTER_MINIMAL ? (
+            <>
+              <div className="panel">
+                <h3>Run-Steuerung & Runtime</h3>
+                <div className="run-control-block">
+                  <label className="meta-text" htmlFor="auto-run-preset">Auto-Run</label>
+                  <select
+                    id="auto-run-preset"
+                    value={autoRunPresetValue}
+                    onChange={(event) => handleAutoRunPresetChange(event.target.value)}
+                    disabled={autoRunControlDisabled}
+                  >
+                    {AUTO_RUN_PRESET_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="chip-row">
+                  <span className={`chip ${runtime?.health_ok ? "chip-ok" : "chip-danger"}`}>
+                    EOS: {runtime?.health_ok ? "ok" : "offline"}
+                  </span>
+                  <span className={`chip ${autoRunPresetValue === "off" ? "chip-neutral" : "chip-ok"}`}>
+                    Auto: {AUTO_RUN_PRESET_OPTIONS.find((option) => option.value === autoRunPresetValue)?.label ?? autoRunPresetValue}
+                  </span>
+                  <span className={`chip ${runtimeBusy ? "chip-warning" : "chip-ok"}`}>
+                    Busy: {runtimeBusy ? "running" : "idle"}
+                  </span>
+                </div>
+                <div className="run-actions-grid">
+                  <button
+                    type="button"
+                    className="run-action-button"
+                    onClick={triggerForceRun}
+                    disabled={isForcingRun || isRefreshingPrediction !== null}
+                  >
+                    <span className="run-action-title">{isForcingRun ? "Force Run..." : "Force Run"}</span>
+                    <span className="run-action-subline">voller Lauf</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="run-action-button secondary"
+                    onClick={() => void triggerPredictionRefresh("pv")}
+                    disabled={isRefreshingPrediction !== null || isForcingRun}
+                  >
+                    <span className="run-action-title">{isRefreshingPrediction === "pv" ? "PV Refresh..." : "PV Refresh"}</span>
+                    <span className="run-action-subline">nur PV</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="run-action-button secondary"
+                    onClick={() => void triggerPredictionRefresh("prices")}
+                    disabled={isRefreshingPrediction !== null || isForcingRun}
+                  >
+                    <span className="run-action-title">{isRefreshingPrediction === "prices" ? "Preis Refresh..." : "Preis Refresh"}</span>
+                    <span className="run-action-subline">nur Preise</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="run-action-button secondary"
+                    onClick={() => void triggerPredictionRefresh("all")}
+                    disabled={isRefreshingPrediction !== null || isForcingRun}
+                  >
+                    <span className="run-action-title">{isRefreshingPrediction === "all" ? "All Refresh..." : "All Refresh"}</span>
+                    <span className="run-action-subline">alle Prognosen</span>
+                  </button>
+                </div>
+                {runtimeFeedback ? (
+                  <p className={runtimeFeedback.type === "error" ? "field-error" : "meta-text"}>
+                    {runtimeFeedback.message}
+                  </p>
+                ) : null}
+              </div>
 
           <div className="panel">
             <h3>Run-Übersicht</h3>
@@ -1593,31 +1772,9 @@ export default function App() {
 
           <div className="panel">
             <h3>Run-Historie</h3>
-            <div className="actions-row">
-              <select
-                value={runSourceFilter}
-                onChange={(event) =>
-                  setRunSourceFilter(
-                    event.target.value as "all" | "automatic" | "force_run" | "prediction_refresh",
-                  )
-                }
-              >
-                <option value="all">Quelle: alle</option>
-                <option value="automatic">Quelle: auto</option>
-                <option value="force_run">Quelle: force</option>
-                <option value="prediction_refresh">Quelle: prediction</option>
-              </select>
-              <select value={runStatusFilter} onChange={(event) => setRunStatusFilter(event.target.value as "all" | "running" | "success" | "partial" | "failed")}>
-                <option value="all">Status: alle</option>
-                <option value="running">running</option>
-                <option value="success">success</option>
-                <option value="partial">partial</option>
-                <option value="failed">failed</option>
-              </select>
-            </div>
             <div className="run-list">
-              {filteredRuns.length === 0 ? <p>Keine Runs für den aktiven Filter.</p> : null}
-              {filteredRuns.map((run) => {
+              {runs.length === 0 ? <p>Keine Runs vorhanden.</p> : null}
+              {runs.map((run) => {
                 const metrics = runMetricsById[run.id];
                 const metricLabel = formatRunMetricsLabel(run, metrics, baseHorizonHours);
                 return (
@@ -1683,38 +1840,36 @@ export default function App() {
               </>
             )}
           </div>
+            </>
+          ) : null}
         </section>
 
         <section className="pane">
           <h2>Outputs</h2>
           <p className="pane-copy">
-            Konkrete Ausführung aus EOS-Plan: aktive Entscheidungen, Zustandswechsel, HTTP-Dispatch und Plausibilitätschecks.
+            Konkrete Ausführung aus EOS-Plan: aktive Entscheidungen, Zustandswechsel und HTTP-Pull-Signale.
           </p>
 
           <OutputChartsPanel
             runId={selectedRunId}
             timeline={visibleOutputTimeline}
             current={visibleOutputCurrent}
+            configPayload={runtime?.config_payload ?? null}
             solutionPayload={solution?.payload_json ?? null}
             predictionSeries={selectedRunPredictionSeries}
           />
 
           <div className="panel">
-            <div className="panel-head">
-              <h3>Aktive Entscheidungen jetzt</h3>
-              <button type="button" onClick={triggerForceDispatch} disabled={isForcingDispatch}>
-                {isForcingDispatch ? "sende..." : "Force Dispatch"}
-              </button>
-            </div>
-            {dispatchMessage ? <p className="meta-text">{dispatchMessage}</p> : null}
+            <h3>Aktive Entscheidungen jetzt</h3>
             {visibleOutputCurrent.length === 0 ? (
               <p>Keine aktive Entscheidung verfügbar.</p>
             ) : (
-              <div className="data-table">
+              <div className="data-table outputs-current-table">
                 <div className="table-head">
                   <span>Resource</span>
                   <span>Mode</span>
                   <span>Faktor</span>
+                  <span>Soll-Leistung (kW)</span>
                   <span>Effective</span>
                   <span>Safety</span>
                 </div>
@@ -1723,6 +1878,7 @@ export default function App() {
                     <span>{item.resource_id}</span>
                     <span>{item.operation_mode_id ?? "-"}</span>
                     <span>{item.operation_mode_factor ?? "-"}</span>
+                    <span>{formatSignedKw(item.requested_power_kw)}</span>
                     <span>{formatTimestamp(item.effective_at)}</span>
                     <span className={`chip ${item.safety_status === "ok" ? "chip-ok" : "chip-warning"}`}>
                       {item.safety_status}
@@ -1760,139 +1916,49 @@ export default function App() {
           </div>
 
           <div className="panel">
-            <h3>Dispatch-Log</h3>
-            {visibleOutputEvents.length === 0 ? (
-              <p>Noch keine Dispatch-Events.</p>
+            <h3>Output-Signale (HTTP Pull)</h3>
+            <p className="meta-text">
+              Loxone URL: <code>{outputSignalsCentralUrl}</code>
+            </p>
+            <p className="meta-text">
+              Stand: <strong>{formatTimestamp(outputSignalsBundle?.fetched_at ?? null)}</strong>
+            </p>
+            <p className="meta-text">
+              Letzter Abruf (URL): <strong>{formatTimestamp(outputSignalsFetchSummary?.latestFetchTs ?? null)}</strong>
+              {" "} | Letzte Quelle: <strong>{outputSignalsFetchSummary?.latestFetchClient ?? "-"}</strong>
+              {" "} | Abrufe: <strong>{outputSignalsFetchSummary?.maxFetchCount ?? 0}</strong>
+            </p>
+            <p className="meta-text">
+              JSON Debug: <code>{outputSignalsCentralJsonUrl}</code>
+            </p>
+            {visibleOutputSignals.length === 0 ? (
+              <p>Keine abrufbaren Output-Signale.</p>
             ) : (
-              <div className="data-table">
-                <div className="table-head">
-                  <span>Zeit</span>
-                  <span>Resource</span>
-                  <span>Kind</span>
-                  <span>Status</span>
-                  <span>HTTP</span>
-                </div>
-                {visibleOutputEvents.slice(0, 25).map((event) => (
-                  <div key={event.id} className="table-row">
-                    <span>{formatTimestamp(event.created_at)}</span>
-                    <span>{event.resource_id ?? "-"}</span>
-                    <span>{event.dispatch_kind}</span>
-                    <span className={`chip ${dispatchStatusChipClass(event.status)}`}>{event.status}</span>
-                    <span>{event.http_status ?? "-"}</span>
+              <div className="output-signal-grid">
+                {visibleOutputSignals.map((signal) => (
+                  <div key={signal.signal_key} className="output-signal-card">
+                    <div className="output-signal-head">
+                      <strong>{signal.signal_key}</strong>
+                      <span className={`chip ${outputSignalStatusChipClass(signal.status)}`}>{signal.status}</span>
+                    </div>
+                    <div className="meta-text">
+                      Label: <strong>{signal.label}</strong>
+                    </div>
+                    <div className="output-signal-value">{formatSignedKw(signal.requested_power_kw)} kW</div>
+                    <div className="meta-text">
+                      JSON-Pfad: <code>{signal.json_path_value}</code>
+                    </div>
+                    <div className="meta-text">
+                      Loxone-Befehlskennung: <code>{signal.signal_key}:\v</code>
+                    </div>
+                    <div className="meta-text">
+                      Resource: <strong>{signal.resource_id ?? "-"}</strong> | Run:{" "}
+                      <strong>{signal.run_id === null ? "-" : `#${signal.run_id}`}</strong>
+                    </div>
                   </div>
                 ))}
               </div>
             )}
-          </div>
-
-          <div className="panel">
-            <h3>Output Targets</h3>
-            <div className="data-table compact">
-              <div className="table-head">
-                <span>Resource</span>
-                <span>Webhook</span>
-                <span>Method</span>
-                <span>Status</span>
-                <span>Aktionen</span>
-              </div>
-              {outputTargets.map((target) => (
-                <div key={target.id} className="table-row">
-                  <span>{target.resource_id}</span>
-                  <span className="truncate">{target.webhook_url}</span>
-                  <span>{target.method}</span>
-                  <span className={`chip ${target.enabled ? "chip-ok" : "chip-warning"}`}>
-                    {target.enabled ? "enabled" : "disabled"}
-                  </span>
-                  <span className="actions-inline">
-                    <button type="button" className="secondary" onClick={() => editOutputTarget(target)}>
-                      Edit
-                    </button>
-                    <button type="button" className="secondary" onClick={() => void toggleOutputTargetEnabled(target)}>
-                      {target.enabled ? "Disable" : "Enable"}
-                    </button>
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            <div className="target-form-grid">
-              <input
-                value={targetForm.resource_id}
-                onChange={(event) => setTargetForm((current) => ({ ...current, resource_id: event.target.value }))}
-                placeholder="resource_id (z. B. lfp, shaby)"
-              />
-              <input
-                value={targetForm.webhook_url}
-                onChange={(event) => setTargetForm((current) => ({ ...current, webhook_url: event.target.value }))}
-                placeholder="http://target.local/webhook"
-              />
-              <select
-                value={targetForm.method}
-                onChange={(event) => setTargetForm((current) => ({ ...current, method: event.target.value }))}
-              >
-                <option value="POST">POST</option>
-                <option value="PUT">PUT</option>
-                <option value="PATCH">PATCH</option>
-              </select>
-              <label className="checkbox-line">
-                <input
-                  type="checkbox"
-                  checked={targetForm.enabled}
-                  onChange={(event) => setTargetForm((current) => ({ ...current, enabled: event.target.checked }))}
-                />
-                enabled
-              </label>
-              <input
-                value={targetForm.timeout_seconds}
-                onChange={(event) => setTargetForm((current) => ({ ...current, timeout_seconds: event.target.value }))}
-                placeholder="timeout_seconds"
-              />
-              <input
-                value={targetForm.retry_max}
-                onChange={(event) => setTargetForm((current) => ({ ...current, retry_max: event.target.value }))}
-                placeholder="retry_max"
-              />
-              <textarea
-                value={targetForm.headers_json}
-                onChange={(event) => setTargetForm((current) => ({ ...current, headers_json: event.target.value }))}
-                rows={3}
-                placeholder='headers_json, z. B. {"Authorization":"Bearer ..."}'
-              />
-              <textarea
-                value={targetForm.payload_template_json}
-                onChange={(event) =>
-                  setTargetForm((current) => ({ ...current, payload_template_json: event.target.value }))
-                }
-                rows={3}
-                placeholder='payload_template_json (optional)'
-              />
-            </div>
-            <div className="actions-row">
-              <button type="button" onClick={submitOutputTarget}>
-                {targetEditId === null ? "Target anlegen" : "Target aktualisieren"}
-              </button>
-              {targetEditId !== null ? (
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => {
-                    setTargetEditId(null);
-                    setTargetForm({
-                      resource_id: "",
-                      webhook_url: "",
-                      method: "POST",
-                      enabled: true,
-                      timeout_seconds: "10",
-                      retry_max: "2",
-                      headers_json: "{}",
-                      payload_template_json: "",
-                    });
-                  }}
-                >
-                  Edit abbrechen
-                </button>
-              ) : null}
-            </div>
           </div>
 
           <div className="panel">
@@ -1922,11 +1988,21 @@ export default function App() {
           </div>
 
           <div className="panel">
-            <details>
+            <details
+              open={detailsOpenState["outputs.plan_json"] ?? false}
+              onToggle={(event) =>
+                setDetailsOpen("outputs.plan_json", (event.currentTarget as HTMLDetailsElement).open)
+              }
+            >
               <summary><strong>Plan (JSON)</strong></summary>
               <pre>{prettyJson(plan?.payload_json ?? null)}</pre>
             </details>
-            <details>
+            <details
+              open={detailsOpenState["outputs.solution_json"] ?? false}
+              onToggle={(event) =>
+                setDetailsOpen("outputs.solution_json", (event.currentTarget as HTMLDetailsElement).open)
+              }
+            >
               <summary><strong>Solution (JSON)</strong></summary>
               <pre>{prettyJson(solution?.payload_json ?? null)}</pre>
             </details>
@@ -1942,9 +2018,360 @@ type FieldListProps = {
   drafts: Record<string, DraftState>;
   onChange: (field: SetupField, value: string) => void;
   onBlur: (fieldId: string) => void;
+  detailsOpenState: Record<string, boolean>;
+  onDetailsToggle: (key: string, open: boolean) => void;
 };
 
-function FieldList({ fields, drafts, onChange, onBlur }: FieldListProps) {
+type SetupCategoriesViewProps = {
+  layout: SetupLayout | null;
+  drafts: Record<string, DraftState>;
+  onChange: (field: SetupField, value: string) => void;
+  onBlur: (fieldId: string) => void;
+  onMutateEntity: (payload: SetupEntityMutatePayload) => void;
+  mutatingEntity: boolean;
+  detailsOpenState: Record<string, boolean>;
+  onDetailsToggle: (key: string, open: boolean) => void;
+};
+
+function SetupCategoriesView({
+  layout,
+  drafts,
+  onChange,
+  onBlur,
+  onMutateEntity,
+  mutatingEntity,
+  detailsOpenState,
+  onDetailsToggle,
+}: SetupCategoriesViewProps) {
+  const [categoryCloneSelection, setCategoryCloneSelection] = useState<Record<string, string>>({});
+  const [windowCloneSelection, setWindowCloneSelection] = useState<Record<string, string>>({});
+  const categories = layout?.categories ?? [];
+
+  if (!layout) {
+    return <p>Lade Kategorien...</p>;
+  }
+
+  if (categories.length === 0) {
+    return <p>Keine Kategorien.</p>;
+  }
+
+  return (
+    <div className="setup-category-list">
+      {categories.map((category) => {
+        const addEntityType = category.add_entity_type;
+        const topLevelItems = category.items.filter((item) => item.parent_item_key === null);
+        const repeatableCandidates = topLevelItems.filter(
+          (item) => item.entity_type === addEntityType,
+        );
+        const categoryStatusClass = category.invalid_required_count > 0 ? "chip-danger" : "chip-ok";
+        const canAddInCategory =
+          category.repeatable &&
+          addEntityType !== null &&
+          (category.item_limit === null || repeatableCandidates.length < category.item_limit);
+
+        const selectedCategoryClone =
+          categoryCloneSelection[category.category_id] ??
+          (repeatableCandidates[0]?.item_key ?? "__template__");
+
+        return (
+          <details
+            key={category.category_id}
+            className="setup-category"
+            open={detailsOpenState[`setup.category.${category.category_id}`] ?? category.default_open}
+            onToggle={(event) => {
+              const detailsElement = event.currentTarget as HTMLDetailsElement;
+              onDetailsToggle(`setup.category.${category.category_id}`, detailsElement.open);
+            }}
+          >
+            <summary className="setup-category-summary">
+              <span className="setup-category-title">{category.title}</span>
+              <span className="chip-row">
+                <span className={`chip ${category.requirement_label === "KANN" ? "chip-neutral" : "chip-warning"}`}>
+                  {category.requirement_label}
+                </span>
+                <span className={`chip ${categoryStatusClass}`}>
+                  {category.invalid_required_count > 0
+                    ? `${category.invalid_required_count} Pflichtfelder ungultig`
+                    : "Pflichtfelder ok"}
+                </span>
+              </span>
+            </summary>
+
+            {category.description ? <p className="meta-text">{category.description}</p> : null}
+
+            {category.repeatable && addEntityType ? (
+              <div className="setup-category-actions">
+                {repeatableCandidates.length > 1 ? (
+                  <select
+                    value={selectedCategoryClone}
+                    onChange={(event) =>
+                      setCategoryCloneSelection((current) => ({
+                        ...current,
+                        [category.category_id]: event.target.value,
+                      }))
+                    }
+                    disabled={mutatingEntity || !canAddInCategory}
+                  >
+                    {repeatableCandidates.map((candidate) => (
+                      <option key={candidate.item_key} value={candidate.item_key}>
+                        Klonen: {candidate.label}
+                      </option>
+                    ))}
+                    <option value="__template__">Template-Fallback</option>
+                  </select>
+                ) : null}
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={mutatingEntity || !canAddInCategory}
+                  onClick={() => {
+                    const payload: SetupEntityMutatePayload = {
+                      action: "add",
+                      entity_type: addEntityType,
+                    };
+                    if (repeatableCandidates.length === 1) {
+                      payload.clone_from_item_key = repeatableCandidates[0].item_key;
+                    } else if (repeatableCandidates.length > 1 && selectedCategoryClone !== "__template__") {
+                      payload.clone_from_item_key = selectedCategoryClone;
+                    }
+                    onMutateEntity(payload);
+                  }}
+                >
+                  + Hinzufugen
+                </button>
+                {category.item_limit !== null ? (
+                  <span className="meta-text">
+                    Kapazitat: {repeatableCandidates.length}/{category.item_limit}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+
+            {topLevelItems.length === 0 ? (
+              <p className="meta-text">Keine Eintrage vorhanden.</p>
+            ) : (
+              <div className="setup-item-list">
+                {topLevelItems.map((item) => {
+                  const windowItems = category.items.filter(
+                    (candidate) =>
+                      candidate.parent_item_key === item.item_key &&
+                      candidate.entity_type === "home_appliance_window",
+                  );
+                  const baseFields = item.fields.filter((field) => !field.advanced);
+                  const advancedFields = item.fields.filter((field) => field.advanced);
+                  const selectedWindowClone =
+                    windowCloneSelection[item.item_key] ?? (windowItems[0]?.item_key ?? "__template__");
+                  const canAddWindow = windowItems.length < 96;
+                  const itemEntityType = item.entity_type;
+
+                  return (
+                    <div key={item.item_key} className="setup-item-card">
+                      <div className="panel-head">
+                        <h4>{item.label}</h4>
+                        <div className="chip-row">
+                          <span className={`chip ${item.base_object ? "chip-neutral" : "chip-warning"}`}>
+                            {item.base_object ? "Basis" : "Optional"}
+                          </span>
+                          <span className={`chip ${item.invalid_required_count > 0 ? "chip-danger" : "chip-ok"}`}>
+                            {item.invalid_required_count > 0 ? "ungultig" : "ok"}
+                          </span>
+                          {item.deletable && itemEntityType ? (
+                            <button
+                              type="button"
+                              className="secondary"
+                              disabled={mutatingEntity}
+                              onClick={() =>
+                                onMutateEntity({
+                                  action: "remove",
+                                  entity_type: itemEntityType,
+                                  item_key: item.item_key,
+                                  parent_item_key: item.parent_item_key ?? undefined,
+                                })
+                              }
+                            >
+                              Loschen
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      {baseFields.length > 0 ? (
+                        <FieldList
+                          fields={baseFields}
+                          drafts={drafts}
+                          onChange={onChange}
+                          onBlur={onBlur}
+                          detailsOpenState={detailsOpenState}
+                          onDetailsToggle={onDetailsToggle}
+                        />
+                      ) : null}
+
+                      {advancedFields.length > 0 ? (
+                        <details
+                          className="setup-advanced"
+                          open={detailsOpenState[`setup.item.${item.item_key}.advanced`] ?? false}
+                          onToggle={(event) =>
+                            onDetailsToggle(
+                              `setup.item.${item.item_key}.advanced`,
+                              (event.currentTarget as HTMLDetailsElement).open,
+                            )
+                          }
+                        >
+                          <summary>Advanced</summary>
+                          <FieldList
+                            fields={advancedFields}
+                            drafts={drafts}
+                            onChange={onChange}
+                            onBlur={onBlur}
+                            detailsOpenState={detailsOpenState}
+                            onDetailsToggle={onDetailsToggle}
+                          />
+                        </details>
+                      ) : null}
+
+                      {item.entity_type === "home_appliance" ? (
+                        <div className="setup-window-editor">
+                          <div className="setup-window-head">
+                            <strong>Zeitfenster</strong>
+                            <div className="actions-inline">
+                              {windowItems.length > 1 ? (
+                                <select
+                                  value={selectedWindowClone}
+                                  onChange={(event) =>
+                                    setWindowCloneSelection((current) => ({
+                                      ...current,
+                                      [item.item_key]: event.target.value,
+                                    }))
+                                  }
+                                  disabled={mutatingEntity || !canAddWindow}
+                                >
+                                  {windowItems.map((windowItem) => (
+                                    <option key={windowItem.item_key} value={windowItem.item_key}>
+                                      Klonen: {windowItem.label}
+                                    </option>
+                                  ))}
+                                  <option value="__template__">Template-Fallback</option>
+                                </select>
+                              ) : null}
+                              <button
+                                type="button"
+                                className="secondary"
+                                disabled={mutatingEntity || !canAddWindow}
+                                onClick={() => {
+                                  const payload: SetupEntityMutatePayload = {
+                                    action: "add",
+                                    entity_type: "home_appliance_window",
+                                    parent_item_key: item.item_key,
+                                  };
+                                  if (windowItems.length === 1) {
+                                    payload.clone_from_item_key = windowItems[0].item_key;
+                                  } else if (windowItems.length > 1 && selectedWindowClone !== "__template__") {
+                                    payload.clone_from_item_key = selectedWindowClone;
+                                  }
+                                  onMutateEntity(payload);
+                                }}
+                              >
+                                + Zeitfenster
+                              </button>
+                            </div>
+                          </div>
+
+                          {windowItems.length === 0 ? (
+                            <p className="meta-text">Keine Zeitfenster vorhanden.</p>
+                          ) : (
+                            <div className="data-table compact">
+                              <div className="table-head">
+                                <span>Fenster</span>
+                                <span>Startzeit</span>
+                                <span>Dauer</span>
+                                <span>Status</span>
+                                <span>Aktion</span>
+                              </div>
+                              {windowItems.map((windowItem) => {
+                                const startField =
+                                  windowItem.fields.find((field) => field.field_id.endsWith(".start_time")) ?? null;
+                                const durationField =
+                                  windowItem.fields.find((field) => field.field_id.endsWith(".duration_h")) ?? null;
+                                const startDraft = startField ? drafts[startField.field_id] : undefined;
+                                const durationDraft = durationField ? drafts[durationField.field_id] : undefined;
+                                const isWindowInvalid = windowItem.invalid_required_count > 0;
+
+                                return (
+                                  <div key={windowItem.item_key} className="table-row">
+                                    <span className="truncate">{windowItem.label}</span>
+                                    <span>
+                                      {startField ? (
+                                        <FieldInput
+                                          field={startField}
+                                          value={startDraft ? startDraft.value : toInputString(startField)}
+                                          onChange={onChange}
+                                          onBlur={onBlur}
+                                        />
+                                      ) : (
+                                        "-"
+                                      )}
+                                    </span>
+                                    <span>
+                                      {durationField ? (
+                                        <FieldInput
+                                          field={durationField}
+                                          value={durationDraft ? durationDraft.value : toInputString(durationField)}
+                                          onChange={onChange}
+                                          onBlur={onBlur}
+                                        />
+                                      ) : (
+                                        "-"
+                                      )}
+                                    </span>
+                                    <span>
+                                      <span className={`chip ${isWindowInvalid ? "chip-danger" : "chip-ok"}`}>
+                                        {isWindowInvalid ? "ungultig" : "ok"}
+                                      </span>
+                                    </span>
+                                    <span>
+                                      <button
+                                        type="button"
+                                        className="secondary"
+                                        disabled={mutatingEntity}
+                                        onClick={() =>
+                                          onMutateEntity({
+                                            action: "remove",
+                                            entity_type: "home_appliance_window",
+                                            item_key: windowItem.item_key,
+                                            parent_item_key: item.item_key,
+                                          })
+                                        }
+                                      >
+                                        Loschen
+                                      </button>
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </details>
+        );
+      })}
+    </div>
+  );
+}
+
+function FieldList({
+  fields,
+  drafts,
+  onChange,
+  onBlur,
+  detailsOpenState,
+  onDetailsToggle,
+}: FieldListProps) {
   if (fields.length === 0) {
     return <p>Keine Felder.</p>;
   }
@@ -1968,6 +2395,8 @@ function FieldList({ fields, drafts, onChange, onBlur }: FieldListProps) {
           providerValue === "PVForecastAkkudoktor"
             ? "Akkudoktor-Kompatibilität aktiv: 180° (Süden) wird intern minimal auf 179.9° übertragen, um einen bekannten Provider-Edge-Case zu vermeiden."
             : null;
+        const isFeedInTariffProviderField = field.field_id === "param.feedintariff.provider";
+        const providerHelpDetailsKey = `setup.field.${field.field_id}.help`;
 
         return (
           <div key={field.field_id} className={`setup-field${isCritical ? " setup-field-critical" : ""}`}>
@@ -1990,6 +2419,30 @@ function FieldList({ fields, drafts, onChange, onBlur }: FieldListProps) {
               <FieldInput field={field} value={currentInput} onChange={onChange} onBlur={onBlur} />
               {field.unit ? <span className="unit-tag">{field.unit}</span> : null}
             </div>
+            {isFeedInTariffProviderField ? (
+              <details
+                className="field-help"
+                open={detailsOpenState[providerHelpDetailsKey] ?? false}
+                onToggle={(event) =>
+                  onDetailsToggle(providerHelpDetailsKey, (event.currentTarget as HTMLDetailsElement).open)
+                }
+              >
+                <summary>Was bedeutet dieser Provider?</summary>
+                <div className="field-help-content">
+                  <p>Hier stellst du ein, woher EOS den Einspeisepreis bekommt.</p>
+                  <p>
+                    <code>FeedInTariffFixed</code>: konstanter Einspeisetarif (fester Wert in ct/kWh).
+                  </p>
+                  <p>
+                    <code>FeedInTariffImport</code>: Zeitreihe mit variablen Einspeisepreisen aus importierten Daten
+                    (JSON/Datei), z. B. für Spot- oder Direktvermarktungsszenarien.
+                  </p>
+                  <p>
+                    Wichtig: <code>Import</code> bedeutet hier Import der Preisdaten in EOS, nicht Netzbezug.
+                  </p>
+                </div>
+              </details>
+            ) : null}
 
             <div className="meta-text">
               HTTP-Pfad: <code>{field.http_path_template}</code>
@@ -2019,6 +2472,21 @@ type FieldInputProps = {
 };
 
 function FieldInput({ field, value, onChange, onBlur }: FieldInputProps) {
+  const isWindowStartTime = /\.home_appliances\.\d+\.time_windows\.windows\.\d+\.start_time$/.test(field.field_id);
+  const isWindowDuration = /\.home_appliances\.\d+\.time_windows\.windows\.\d+\.duration_h$/.test(field.field_id);
+
+  if (isWindowStartTime) {
+    return (
+      <input
+        type="time"
+        step={60}
+        value={value}
+        onChange={(event) => onChange(field, event.target.value)}
+        onBlur={() => onBlur(field.field_id)}
+      />
+    );
+  }
+
   if (field.value_type === "select") {
     return (
       <select
@@ -2052,7 +2520,8 @@ function FieldInput({ field, value, onChange, onBlur }: FieldInputProps) {
     return (
       <input
         type="number"
-        step="any"
+        step={isWindowDuration ? "0.25" : "any"}
+        min={isWindowDuration ? "0" : undefined}
         value={value}
         onChange={(event) => onChange(field, event.target.value)}
         onBlur={() => onBlur(field.field_id)}

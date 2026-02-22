@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 RunStatus = str
+AutoRunPreset = Literal["off", "15m", "30m", "60m"]
 
 
 class CollectorStatusResponse(BaseModel):
@@ -18,12 +19,21 @@ class CollectorStatusResponse(BaseModel):
     force_run_in_progress: bool
     last_force_request_ts: datetime | None = None
     last_error: str | None = None
+    auto_run_preset: AutoRunPreset = "off"
+    auto_run_enabled: bool = False
+    auto_run_interval_minutes: int | None = None
     aligned_scheduler_enabled: bool = False
     aligned_scheduler_minutes: str = ""
     aligned_scheduler_delay_seconds: int = 0
     aligned_scheduler_next_due_ts: datetime | None = None
     aligned_scheduler_last_trigger_ts: datetime | None = None
     aligned_scheduler_last_skip_reason: str | None = None
+    price_backfill_last_check_ts: datetime | None = None
+    price_backfill_last_attempt_ts: datetime | None = None
+    price_backfill_last_success_ts: datetime | None = None
+    price_backfill_last_status: str | None = None
+    price_backfill_last_history_hours: float | None = None
+    price_backfill_cooldown_until_ts: datetime | None = None
 
 
 class EosRuntimeResponse(BaseModel):
@@ -44,6 +54,16 @@ class EosRuntimeConfigUpdateResponse(BaseModel):
     ems_interval_seconds: int
     applied_mode_path: str
     applied_interval_path: str
+    runtime: EosRuntimeResponse
+
+
+class EosAutoRunUpdateRequest(BaseModel):
+    preset: AutoRunPreset
+
+
+class EosAutoRunUpdateResponse(BaseModel):
+    preset: AutoRunPreset
+    applied_slots: list[int] = Field(default_factory=list)
     runtime: EosRuntimeResponse
 
 
@@ -114,6 +134,7 @@ class EosOutputCurrentItemResponse(BaseModel):
     actuator_id: str | None = None
     operation_mode_id: str | None = None
     operation_mode_factor: float | None = None
+    requested_power_kw: float | None = None
     effective_at: datetime | None = None
     source_instruction: dict[str, Any] = Field(default_factory=dict)
     safety_status: str
@@ -128,6 +149,7 @@ class EosOutputTimelineItemResponse(BaseModel):
     instruction_type: str
     operation_mode_id: str | None = None
     operation_mode_factor: float | None = None
+    requested_power_kw: float | None = None
     execution_time: datetime | None = None
     starts_at: datetime | None = None
     ends_at: datetime | None = None
@@ -135,32 +157,28 @@ class EosOutputTimelineItemResponse(BaseModel):
     deduped: bool = True
 
 
-class OutputDispatchEventResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    run_id: int | None = None
+class EosOutputSignalItemResponse(BaseModel):
+    signal_key: str
+    label: str
     resource_id: str | None = None
-    execution_time: datetime | None = None
-    dispatch_kind: str
-    target_url: str | None = None
-    request_payload_json: dict[str, Any] | list[Any]
-    status: str
-    http_status: int | None = None
-    error_text: str | None = None
-    idempotency_key: str
-    created_at: datetime
-
-
-class OutputDispatchForceRequest(BaseModel):
-    resource_ids: list[str] | None = None
-
-
-class OutputDispatchForceResponse(BaseModel):
-    status: str
-    message: str
+    requested_power_kw: float | None = None
+    unit: Literal["kW"] = "kW"
+    operation_mode_id: str | None = None
+    operation_mode_factor: float | None = None
+    effective_at: datetime | None = None
     run_id: int | None = None
-    queued_resources: list[str] = Field(default_factory=list)
+    json_path_value: str
+    last_fetch_ts: datetime | None = None
+    last_fetch_client: str | None = None
+    fetch_count: int = 0
+    status: str
+
+
+class EosOutputSignalsBundleResponse(BaseModel):
+    central_http_path: str = "/eos/get/outputs"
+    run_id: int | None = None
+    fetched_at: datetime
+    signals: dict[str, EosOutputSignalItemResponse] = Field(default_factory=dict)
 
 
 class EosRunPlausibilityFinding(BaseModel):
@@ -193,22 +211,6 @@ class EosPredictionRefreshResponse(BaseModel):
     message: str
 
 
-class EosMqttOutputEventResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    run_id: int
-    topic: str
-    payload_json: dict[str, Any] | list[Any]
-    qos: int
-    retain: bool
-    output_kind: str = "unknown"
-    resource_id: str | None = None
-    publish_status: str
-    error_text: str | None = None
-    published_at: datetime
-
-
 class EosRunContextResponse(BaseModel):
     run_id: int
     parameter_profile_id: int | None = None
@@ -219,70 +221,6 @@ class EosRunContextResponse(BaseModel):
     runtime_config_snapshot_json: dict[str, Any] | list[Any]
     assembled_eos_input_json: dict[str, Any] | list[Any]
     created_at: datetime
-
-
-class ControlTargetBase(BaseModel):
-    resource_id: str = Field(min_length=1, max_length=128)
-    command_topic: str = Field(min_length=1, max_length=255)
-    enabled: bool = True
-    dry_run_only: bool = True
-    qos: int = Field(default=1, ge=0, le=2)
-    retain: bool = False
-    payload_template_json: dict[str, Any] | list[Any] | None = None
-
-
-class ControlTargetCreateRequest(ControlTargetBase):
-    pass
-
-
-class ControlTargetUpdateRequest(BaseModel):
-    resource_id: str | None = Field(default=None, min_length=1, max_length=128)
-    command_topic: str | None = Field(default=None, min_length=1, max_length=255)
-    enabled: bool | None = None
-    dry_run_only: bool | None = None
-    qos: int | None = Field(default=None, ge=0, le=2)
-    retain: bool | None = None
-    payload_template_json: dict[str, Any] | list[Any] | None = None
-
-
-class ControlTargetResponse(ControlTargetBase):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    updated_at: datetime
-
-
-class OutputTargetBase(BaseModel):
-    resource_id: str = Field(min_length=1, max_length=128)
-    webhook_url: str = Field(min_length=1, max_length=512)
-    method: str = Field(default="POST", min_length=3, max_length=8)
-    headers_json: dict[str, Any] | list[Any] = Field(default_factory=dict)
-    enabled: bool = True
-    timeout_seconds: int = Field(default=10, ge=1, le=300)
-    retry_max: int = Field(default=2, ge=0, le=10)
-    payload_template_json: dict[str, Any] | list[Any] | None = None
-
-
-class OutputTargetCreateRequest(OutputTargetBase):
-    pass
-
-
-class OutputTargetUpdateRequest(BaseModel):
-    resource_id: str | None = Field(default=None, min_length=1, max_length=128)
-    webhook_url: str | None = Field(default=None, min_length=1, max_length=512)
-    method: str | None = Field(default=None, min_length=3, max_length=8)
-    headers_json: dict[str, Any] | list[Any] | None = None
-    enabled: bool | None = None
-    timeout_seconds: int | None = Field(default=None, ge=1, le=300)
-    retry_max: int | None = Field(default=None, ge=0, le=10)
-    payload_template_json: dict[str, Any] | list[Any] | None = None
-
-
-class OutputTargetResponse(OutputTargetBase):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    updated_at: datetime
 
 
 class MeasurementSyncRunResponse(BaseModel):

@@ -2,18 +2,29 @@
 
 Local-first web app as interface for Akkudoktor-EOS.
 
-## Current mode (Slice 9)
+## Current mode (Slice 10)
 
-The app runs in **HTTP-only setup + HTTP output dispatch mode**.
+The app runs in **HTTP-only setup + central HTTP output pull mode**.
 
 - Left pane: `Inputs & Setup` (autosave, mandatory/optional/live, import/export)
+  - now as categorized accordion with `MUSS`/`KANN`, base vs advanced fields, and repeatable add/remove for PV planes, E-Autos, Home-Appliances
 - Middle pane: `Run-Center` (runtime, force run, full run history)
-- Right pane: `Outputs` (active decisions, timeline, dispatch log, output targets, plausibility)
+- Right pane: `Outputs` (active decisions, timeline, output-signals pull, plausibility)
 - Right pane top includes a collapsible chart block (strompreis in `ct/kWh`, PV + load forecast in `kW`, mode/factor timelines)
 - Dynamic field updates use **`/eos/set/*`**
-- Output dispatch uses **HTTP webhooks** (scheduled + heartbeat + force)
-- MQTT dispatch path stays disabled in active runtime path
+- Output pull uses one central endpoint: **`/eos/get/outputs`**
+  - default response is Loxone-friendly plain text (`signal_key:value` per line)
+  - JSON debug/inspection via `?format=json`
+  - Web UI panel `Output-Signale (HTTP Pull)` refreshes every **5s**
+- Legacy MQTT/channel/mapping/control paths are removed from active API + runtime
 - Legacy `POST /optimize` fallback reuses previous `start_solution` (warm-start) from persisted run artifacts when available
+- Price prediction quality uses auto backfill checks against raw `prediction/series` history (not interpolated `prediction/list`)
+
+Retention defaults:
+
+- `DATA_RAW_RETENTION_DAYS=14`
+- `DATA_ROLLUP_5M_RETENTION_DAYS=180`
+- `DATA_ROLLUP_1H_RETENTION_DAYS=1095`
 
 ## UI Unit Contract (mandatory)
 
@@ -45,10 +56,43 @@ CI guardrail:
 ## Run-Center Horizon + Runtime
 
 - Run-Center contains a prominent horizon dropdown.
-- It writes `prediction.hours` and `prediction.historic_hours` (adaptive, minimum `840h`, cap `2160h`).
+- It writes `prediction.hours` and `prediction.historic_hours` (`672h` = 4 weeks, or less effectively if less history is available in DB/provider).
 - If available in current EOS payload, it also writes `optimization.horizon_hours` (or legacy `optimization.hours`).
+- Run artifact capture waits briefly for EOS plan/solution materialization after a run:
+  - `EOS_RUN_ARTIFACT_WAIT_SECONDS=45`
+  - `EOS_RUN_ARTIFACT_POLL_SECONDS=3`
 - Run history shows live runtime for active runs and final duration for completed runs.
 - Run history entries include per-run prediction metrics (target horizon from run context, effective horizon, historic horizon, point count, price range when available).
+- Automatic price-history backfill:
+  - `EOS_HTTP_TIMEOUT_SECONDS=20` (EOS API request timeout used by refresh/capture/backfill calls)
+  - `EOS_PRICE_BACKFILL_ENABLED=true`
+  - `EOS_PRICE_BACKFILL_TARGET_HOURS=672` (4 weeks)
+  - `EOS_PRICE_BACKFILL_MIN_HISTORY_HOURS=648` (minimum acceptable raw coverage)
+  - `EOS_PRICE_BACKFILL_COOLDOWN_SECONDS=86400` (max one restart-backfill per 24h)
+  - `EOS_PRICE_BACKFILL_RESTART_TIMEOUT_SECONDS=180`
+  - `EOS_PRICE_BACKFILL_SETTLE_SECONDS=90` (wait window after restart-refresh to allow provider history to materialize)
+  - Triggered only on prediction refresh scopes `prices` / `all`.
+  - Quality decision is based on raw `GET /v1/prediction/series?key=elecprice_marketprice_wh`.
+  - `prediction/list` may look complete due interpolation and is treated as diagnostics only.
+
+## Inputs & Setup 2.0
+
+- `Inputs & Setup` is grouped into collapsible categories:
+  - `Standort & Basis`
+  - `PV & Forecast`
+  - `Tarife & Last`
+  - `Speicher & Inverter`
+  - `E-Autos`
+  - `Home-Appliances`
+  - `Messwerte & EMR`
+  - `Live-Signale`
+- Mandatory categories are opened by default; optional categories are collapsed by default.
+- Repeatables:
+  - `PV-Planes` (Plane #1 base object, not deletable; additional planes deletable)
+  - `E-Autos` (all optional, deletable)
+  - `Home-Appliances` (all optional, deletable, structured time-window editor with add/remove)
+- Add strategy: clone-first. If no clone source exists, backend template fallback is used.
+- Autosave is unchanged and now applies to dynamic field ids as well.
 
 ## Dependencies
 
@@ -96,9 +140,13 @@ docker compose -f infra/docker-compose.yml exec -T backend alembic upgrade head
 
 ```bash
 curl -s http://192.168.3.157:8080/api/setup/fields | jq
+curl -s http://192.168.3.157:8080/api/setup/layout | jq
 curl -s -X PATCH http://192.168.3.157:8080/api/setup/fields \
   -H "Content-Type: application/json" \
   -d '{"updates":[{"field_id":"param.general.latitude","value":49.1128,"source":"ui"}]}' | jq
+curl -s -X POST http://192.168.3.157:8080/api/setup/entities/mutate \
+  -H "Content-Type: application/json" \
+  -d '{"action":"add","entity_type":"electric_vehicle","clone_from_item_key":"electric_vehicle:0"}' | jq
 curl -s http://192.168.3.157:8080/api/setup/readiness | jq
 curl -s http://192.168.3.157:8080/api/setup/export | jq
 ```
@@ -133,27 +181,16 @@ curl -s http://192.168.3.157:8080/api/eos/runs/103/solution | jq
 curl -s http://192.168.3.157:8080/api/eos/runs/103/plausibility | jq
 curl -s http://192.168.3.157:8080/api/eos/outputs/current | jq
 curl -s http://192.168.3.157:8080/api/eos/outputs/timeline | jq
-curl -s http://192.168.3.157:8080/api/eos/outputs/events | jq
-curl -s -X POST http://192.168.3.157:8080/api/eos/outputs/dispatch/force \
-  -H "Content-Type: application/json" -d '{"resource_ids":null}' | jq
+curl -s http://192.168.3.157:8080/api/eos/output-signals | jq
+curl -s http://192.168.3.157:8080/eos/get/outputs
+curl -s "http://192.168.3.157:8080/eos/get/outputs?format=json" | jq
 ```
 
-## Output target management
+Loxone command identifiers from central pull are:
 
 ```bash
-curl -s http://192.168.3.157:8080/api/eos/output-targets | jq
-curl -s -X POST http://192.168.3.157:8080/api/eos/output-targets \
-  -H "Content-Type: application/json" \
-  -d '{
-    "resource_id":"lfp",
-    "webhook_url":"http://192.168.3.20:9000/eos/dispatch",
-    "method":"POST",
-    "enabled":true,
-    "timeout_seconds":10,
-    "retry_max":2,
-    "headers_json":{},
-    "payload_template_json":null
-  }' | jq
+battery1_target_power_kw:\v
+shaby_target_power_kw:\v
 ```
 
 ## Status endpoints
@@ -162,3 +199,7 @@ curl -s -X POST http://192.168.3.157:8080/api/eos/output-targets \
 curl -s http://192.168.3.157:8080/health
 curl -s http://192.168.3.157:8080/status | jq
 ```
+
+## Archived docs
+
+Historical MQTT-era slice docs were moved to `docs/archive/`.

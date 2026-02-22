@@ -19,6 +19,9 @@ export type SetupField = {
   http_path_template: string;
   http_override_active: boolean;
   http_override_last_ts: string | null;
+  advanced: boolean;
+  item_key: string | null;
+  category_id: string | null;
   error: string | null;
 };
 
@@ -39,6 +42,56 @@ export type SetupFieldUpdateResult = {
 
 export type SetupFieldPatchResponse = {
   results: SetupFieldUpdateResult[];
+};
+
+export type SetupEntityType = "pv_plane" | "electric_vehicle" | "home_appliance" | "home_appliance_window";
+export type SetupEntityAction = "add" | "remove";
+
+export type SetupCategoryItem = {
+  item_key: string;
+  label: string;
+  entity_type: SetupEntityType | null;
+  parent_item_key: string | null;
+  deletable: boolean;
+  base_object: boolean;
+  required_count: number;
+  invalid_required_count: number;
+  fields: SetupField[];
+};
+
+export type SetupCategory = {
+  category_id: string;
+  title: string;
+  description: string | null;
+  requirement_label: "MUSS" | "KANN" | "MUSS/KANN";
+  repeatable: boolean;
+  add_entity_type: SetupEntityType | null;
+  default_open: boolean;
+  required_count: number;
+  invalid_required_count: number;
+  item_limit: number | null;
+  items: SetupCategoryItem[];
+};
+
+export type SetupLayout = {
+  generated_at: string;
+  invalid_required_total: number;
+  categories: SetupCategory[];
+};
+
+export type SetupEntityMutatePayload = {
+  action: SetupEntityAction;
+  entity_type: SetupEntityType;
+  item_key?: string;
+  clone_from_item_key?: string;
+  parent_item_key?: string;
+};
+
+export type SetupEntityMutateResponse = {
+  status: "saved" | "rejected";
+  message: string;
+  warnings: string[];
+  layout: SetupLayout;
 };
 
 export type SetupReadinessItem = {
@@ -70,6 +123,9 @@ export type SetupImportResponse = {
 export type StatusResponse = {
   status: string;
   timestamp: string;
+  config?: {
+    eos_visualize_safe_horizon_hours?: number | null;
+  };
   setup?: {
     readiness_level?: string;
     blockers_count?: number;
@@ -81,6 +137,8 @@ export type StatusResponse = {
   };
 };
 
+export type EosAutoRunPreset = "off" | "15m" | "30m" | "60m";
+
 export type CollectorStatus = {
   running: boolean;
   poll_seconds: number;
@@ -90,12 +148,21 @@ export type CollectorStatus = {
   force_run_in_progress: boolean;
   last_force_request_ts: string | null;
   last_error: string | null;
+  auto_run_preset: EosAutoRunPreset;
+  auto_run_enabled: boolean;
+  auto_run_interval_minutes: number | null;
   aligned_scheduler_enabled: boolean;
   aligned_scheduler_minutes: string;
   aligned_scheduler_delay_seconds: number;
   aligned_scheduler_next_due_ts: string | null;
   aligned_scheduler_last_trigger_ts: string | null;
   aligned_scheduler_last_skip_reason: string | null;
+  price_backfill_last_check_ts: string | null;
+  price_backfill_last_attempt_ts: string | null;
+  price_backfill_last_success_ts: string | null;
+  price_backfill_last_status: string | null;
+  price_backfill_last_history_hours: number | null;
+  price_backfill_cooldown_until_ts: string | null;
 };
 
 export type EosRuntime = {
@@ -119,6 +186,12 @@ export type EosPredictionRefreshResponse = {
   scope: EosPredictionRefreshScope;
   status: string;
   message: string;
+};
+
+export type EosAutoRunUpdateResponse = {
+  preset: EosAutoRunPreset;
+  applied_slots: number[];
+  runtime: EosRuntime;
 };
 
 export type EosRunSummary = {
@@ -176,12 +249,38 @@ export type EosRunPredictionSeries = {
   points: EosRunPredictionSeriesPoint[];
 };
 
+export type DataSignalSeriesResolution = "raw" | "5m" | "1h" | "1d";
+
+export type DataSignalSeriesPoint = {
+  ts: string;
+  value_num: number | null;
+  value_text: string | null;
+  value_bool: boolean | null;
+  value_json: Record<string, unknown> | unknown[] | null;
+  quality_status: string | null;
+  source_type: string | null;
+  run_id: number | null;
+  min_num: number | null;
+  max_num: number | null;
+  avg_num: number | null;
+  sum_num: number | null;
+  count_num: number | null;
+  last_num: number | null;
+};
+
+export type DataSignalSeries = {
+  signal_key: string;
+  resolution: DataSignalSeriesResolution;
+  points: DataSignalSeriesPoint[];
+};
+
 export type EosOutputCurrentItem = {
   run_id: number;
   resource_id: string;
   actuator_id: string | null;
   operation_mode_id: string | null;
   operation_mode_factor: number | null;
+  requested_power_kw: number | null;
   effective_at: string | null;
   source_instruction: Record<string, unknown>;
   safety_status: string;
@@ -196,6 +295,7 @@ export type EosOutputTimelineItem = {
   instruction_type: string;
   operation_mode_id: string | null;
   operation_mode_factor: number | null;
+  requested_power_kw: number | null;
   execution_time: string | null;
   starts_at: string | null;
   ends_at: string | null;
@@ -203,53 +303,29 @@ export type EosOutputTimelineItem = {
   deduped: boolean;
 };
 
-export type OutputDispatchEvent = {
-  id: number;
-  run_id: number | null;
+export type EosOutputSignalItem = {
+  signal_key: string;
+  label: string;
   resource_id: string | null;
-  execution_time: string | null;
-  dispatch_kind: string;
-  target_url: string | null;
-  request_payload_json: Record<string, unknown> | unknown[];
-  status: "sent" | "blocked" | "failed" | "retrying" | "skipped_no_target" | string;
-  http_status: number | null;
-  error_text: string | null;
-  idempotency_key: string;
-  created_at: string;
-};
-
-export type OutputDispatchForceResponse = {
-  status: string;
-  message: string;
+  requested_power_kw: number | null;
+  unit: "kW";
+  operation_mode_id: string | null;
+  operation_mode_factor: number | null;
+  effective_at: string | null;
   run_id: number | null;
-  queued_resources: string[];
+  json_path_value: string;
+  last_fetch_ts: string | null;
+  last_fetch_client: string | null;
+  fetch_count: number;
+  status: string;
 };
 
-export type OutputTarget = {
-  id: number;
-  resource_id: string;
-  webhook_url: string;
-  method: "POST" | "PUT" | "PATCH" | string;
-  headers_json: Record<string, unknown> | unknown[];
-  enabled: boolean;
-  timeout_seconds: number;
-  retry_max: number;
-  payload_template_json: Record<string, unknown> | unknown[] | null;
-  updated_at: string;
+export type EosOutputSignalsBundle = {
+  central_http_path: string;
+  run_id: number | null;
+  fetched_at: string;
+  signals: Record<string, EosOutputSignalItem>;
 };
-
-export type OutputTargetCreatePayload = {
-  resource_id: string;
-  webhook_url: string;
-  method?: string;
-  headers_json?: Record<string, unknown> | unknown[];
-  enabled?: boolean;
-  timeout_seconds?: number;
-  retry_max?: number;
-  payload_template_json?: Record<string, unknown> | unknown[] | null;
-};
-
-export type OutputTargetUpdatePayload = Partial<OutputTargetCreatePayload>;
 
 export type EosRunPlausibilityFinding = {
   level: "ok" | "warn" | "error" | string;
