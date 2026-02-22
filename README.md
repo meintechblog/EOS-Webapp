@@ -10,6 +10,7 @@ The app runs in **HTTP-only setup + central HTTP output pull mode**.
   - now as categorized accordion with `MUSS`/`KANN`, base vs advanced fields, and repeatable add/remove for PV planes, E-Autos, Home-Appliances
 - Middle pane: `Run-Center` (runtime, force run, full run history)
 - Right pane: `Outputs` (active decisions, timeline, output-signals pull, plausibility)
+- Collapsible sections in UI use a consistent triangle caret (same behavior in `Inputs & Setup`, output charts, and main output blocks).
 - Right pane top includes a collapsible chart block (strompreis in `ct/kWh`, PV + load forecast in `kW`, mode/factor timelines)
 - Dynamic field updates use **`/eos/set/*`**
 - Output pull uses one central endpoint: **`/eos/get/outputs`**

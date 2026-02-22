@@ -1859,8 +1859,14 @@ export default function App() {
             predictionSeries={selectedRunPredictionSeries}
           />
 
-          <div className="panel">
-            <h3>Aktive Entscheidungen jetzt</h3>
+          <details
+            className="panel panel-collapsible"
+            open={detailsOpenState["outputs.current"] ?? true}
+            onToggle={(event) =>
+              setDetailsOpen("outputs.current", (event.currentTarget as HTMLDetailsElement).open)
+            }
+          >
+            <summary className="panel-summary collapse-summary"><strong>Aktive Entscheidungen jetzt</strong></summary>
             {visibleOutputCurrent.length === 0 ? (
               <p>Keine aktive Entscheidung verfügbar.</p>
             ) : (
@@ -1887,10 +1893,16 @@ export default function App() {
                 ))}
               </div>
             )}
-          </div>
+          </details>
 
-          <div className="panel">
-            <h3>Nächste Zustandswechsel</h3>
+          <details
+            className="panel panel-collapsible"
+            open={detailsOpenState["outputs.timeline"] ?? true}
+            onToggle={(event) =>
+              setDetailsOpen("outputs.timeline", (event.currentTarget as HTMLDetailsElement).open)
+            }
+          >
+            <summary className="panel-summary collapse-summary"><strong>Nächste Zustandswechsel</strong></summary>
             {visibleOutputTimeline.length === 0 ? (
               <p>Keine Timeline-Einträge.</p>
             ) : (
@@ -1913,10 +1925,16 @@ export default function App() {
                 ))}
               </div>
             )}
-          </div>
+          </details>
 
-          <div className="panel">
-            <h3>Output-Signale (HTTP Pull)</h3>
+          <details
+            className="panel panel-collapsible"
+            open={detailsOpenState["outputs.signals"] ?? true}
+            onToggle={(event) =>
+              setDetailsOpen("outputs.signals", (event.currentTarget as HTMLDetailsElement).open)
+            }
+          >
+            <summary className="panel-summary collapse-summary"><strong>Output-Signale (HTTP Pull)</strong></summary>
             <p className="meta-text">
               Loxone URL: <code>{outputSignalsCentralUrl}</code>
             </p>
@@ -1959,10 +1977,16 @@ export default function App() {
                 ))}
               </div>
             )}
-          </div>
+          </details>
 
-          <div className="panel">
-            <h3>Plausibilität</h3>
+          <details
+            className="panel panel-collapsible"
+            open={detailsOpenState["outputs.plausibility"] ?? true}
+            onToggle={(event) =>
+              setDetailsOpen("outputs.plausibility", (event.currentTarget as HTMLDetailsElement).open)
+            }
+          >
+            <summary className="panel-summary collapse-summary"><strong>Plausibilität</strong></summary>
             {plausibility === null ? (
               <p>Keine Plausibilitätsdaten.</p>
             ) : (
@@ -1985,7 +2009,7 @@ export default function App() {
                 </ul>
               </>
             )}
-          </div>
+          </details>
 
           <div className="panel">
             <details
@@ -1994,7 +2018,7 @@ export default function App() {
                 setDetailsOpen("outputs.plan_json", (event.currentTarget as HTMLDetailsElement).open)
               }
             >
-              <summary><strong>Plan (JSON)</strong></summary>
+              <summary className="collapse-summary"><strong>Plan (JSON)</strong></summary>
               <pre>{prettyJson(plan?.payload_json ?? null)}</pre>
             </details>
             <details
@@ -2003,7 +2027,7 @@ export default function App() {
                 setDetailsOpen("outputs.solution_json", (event.currentTarget as HTMLDetailsElement).open)
               }
             >
-              <summary><strong>Solution (JSON)</strong></summary>
+              <summary className="collapse-summary"><strong>Solution (JSON)</strong></summary>
               <pre>{prettyJson(solution?.payload_json ?? null)}</pre>
             </details>
           </div>
@@ -2083,7 +2107,7 @@ function SetupCategoriesView({
               onDetailsToggle(`setup.category.${category.category_id}`, detailsElement.open);
             }}
           >
-            <summary className="setup-category-summary">
+            <summary className="setup-category-summary collapse-summary">
               <span className="setup-category-title">{category.title}</span>
               <span className="chip-row">
                 <span className={`chip ${category.requirement_label === "KANN" ? "chip-neutral" : "chip-warning"}`}>
@@ -2217,7 +2241,7 @@ function SetupCategoriesView({
                             )
                           }
                         >
-                          <summary>Advanced</summary>
+                          <summary className="collapse-summary">Advanced</summary>
                           <FieldList
                             fields={advancedFields}
                             drafts={drafts}
@@ -2427,7 +2451,7 @@ function FieldList({
                   onDetailsToggle(providerHelpDetailsKey, (event.currentTarget as HTMLDetailsElement).open)
                 }
               >
-                <summary>Was bedeutet dieser Provider?</summary>
+                <summary className="collapse-summary">Was bedeutet dieser Provider?</summary>
                 <div className="field-help-content">
                   <p>Hier stellst du ein, woher EOS den Einspeisepreis bekommt.</p>
                   <p>
