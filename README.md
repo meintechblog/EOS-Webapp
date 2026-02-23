@@ -12,6 +12,7 @@ The app runs in **HTTP-only setup + central HTTP output pull mode**.
 - Right pane: `Outputs` (active decisions, timeline, output-signals pull, plausibility)
 - Collapsible sections in UI use a consistent triangle caret (same behavior in `Inputs & Setup`, output charts, and main output blocks).
 - Right pane top includes a collapsible chart block (strompreis in `ct/kWh`, PV + load forecast in `kW`, mode/factor timelines)
+  - Mode timeline now renders one bar chart per resource/device and uses the same time window as the other output charts.
 - Dynamic field updates use **`/eos/set/*`**
 - Output pull uses one central endpoint: **`/eos/get/outputs`**
   - default response is Loxone-friendly plain text (`signal_key:value` per line)
