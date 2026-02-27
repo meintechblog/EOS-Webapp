@@ -2,7 +2,7 @@
 
 ## 2026-02-19
 - Project skeleton created.
-- Private GitHub repository connected and synced.
+- Private GitHub repository connected and synced (initial state; repository is now public).
 - Proxmox VM 702 provisioned (Debian 13.3).
 - Docker + docker-compose installed on VM.
 - Base stack deployed (eos, postgres, backend, frontend scaffold).
@@ -66,7 +66,7 @@
   - full mapping edit and delete flows
   - dedicated info hints for `payload_path`, units, and `grid_power_w` sign ambiguity
 - Added docs for operations and verification:
-  - `docs/slice-2.5-automap.md`
+  - `docs/archive/slice-2.5-automap.md`
   - README updates for Slice 2.5 flow
 - Verified end-to-end scenarios on running stack:
   - automap apply + in-place update behavior
@@ -165,7 +165,7 @@
   - control target create/edit
 - Updated `.env.example` and `infra/docker-compose.yml` with Slice-3 env passthrough.
 - Added docs:
-  - `docs/slice-3-eos-orchestration.md`
+  - `docs/archive/slice-3-eos-orchestration.md`
   - README Slice-3 runbook/API examples.
 
 ## 2026-02-19 (Slice 4 parameters profiles + import/export)
@@ -330,7 +330,7 @@
   - battery charge-like commands are skipped when latest `grid_import_w` exceeds threshold
   - skip decisions are audited as `publish_status=skipped_grid_charge_guard`
 - Added runtime visibility in `/status.config` for new guard settings.
-- Added docs updates in README and `docs/slice-3-eos-orchestration.md`.
+- Added docs updates in README and `docs/archive/slice-3-eos-orchestration.md`.
 - Updated parameter catalog hints for tariff providers to reflect current EOS provider set (`FeedInTariffFixed`/`FeedInTariffImport`) and import-series usage guidance.
 
 ### Dispatch guard verification
@@ -410,7 +410,7 @@
   - nginx now proxies `/eos/input/` to backend
   - vite dev proxy now includes `/eos/input`
 - Added docs:
-  - `docs/slice-6-input-channels.md`
+  - `docs/archive/slice-6-input-channels.md`
   - README updated with slice-6 flow and API examples
 
 ### Slice-6 verification
@@ -496,7 +496,7 @@
   - `Run-Center` headline applied in middle pane
   - dev/prod proxy routes include `/eos/param`
 - Documentation:
-  - new runbook `docs/slice-7-inputs-parameters-unification.md`
+  - new runbook `docs/archive/slice-7-inputs-parameters-unification.md`
   - README updated with slice-7 status, flow, and endpoint examples
 
 ### Slice-7 verification

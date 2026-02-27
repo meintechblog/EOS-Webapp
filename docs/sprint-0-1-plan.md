@@ -2,7 +2,7 @@
 
 ## Sprint 0 (Foundation)
 
-1. Create private GitHub repository `EOS-Webapp`
+1. Create GitHub repository `EOS-Webapp` (initially private)
 2. Provision Proxmox VM (Linux)
 3. Install Docker + Docker Compose
 4. Bring up base stack

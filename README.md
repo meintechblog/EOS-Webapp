@@ -135,8 +135,10 @@ The script:
 Open UI:
 
 ```text
-http://192.168.3.157:3000
+http://<host-ip>:3000
 ```
+
+In the API examples below, replace `<host-ip>` with `localhost` on the same machine.
 
 ## Quickstart (manual)
 
@@ -150,16 +152,16 @@ docker compose -f infra/docker-compose.yml exec -T backend alembic upgrade head
 ## Core setup APIs
 
 ```bash
-curl -s http://192.168.3.157:8080/api/setup/fields | jq
-curl -s http://192.168.3.157:8080/api/setup/layout | jq
-curl -s -X PATCH http://192.168.3.157:8080/api/setup/fields \
+curl -s http://<host-ip>:8080/api/setup/fields | jq
+curl -s http://<host-ip>:8080/api/setup/layout | jq
+curl -s -X PATCH http://<host-ip>:8080/api/setup/fields \
   -H "Content-Type: application/json" \
   -d '{"updates":[{"field_id":"param.general.latitude","value":49.1128,"source":"ui"}]}' | jq
-curl -s -X POST http://192.168.3.157:8080/api/setup/entities/mutate \
+curl -s -X POST http://<host-ip>:8080/api/setup/entities/mutate \
   -H "Content-Type: application/json" \
   -d '{"action":"add","entity_type":"electric_vehicle","clone_from_item_key":"electric_vehicle:0"}' | jq
-curl -s http://192.168.3.157:8080/api/setup/readiness | jq
-curl -s http://192.168.3.157:8080/api/setup/export | jq
+curl -s http://<host-ip>:8080/api/setup/readiness | jq
+curl -s http://<host-ip>:8080/api/setup/export | jq
 ```
 
 ## HTTP setter contract (`/eos/set`)
@@ -167,16 +169,16 @@ curl -s http://192.168.3.157:8080/api/setup/export | jq
 Live signal:
 
 ```bash
-curl -s "http://192.168.3.157:8080/eos/set/signal/pv_power_kw=2.0" | jq
+curl -s "http://<host-ip>:8080/eos/set/signal/pv_power_kw=2.0" | jq
 ```
 
 Parameter update:
 
 ```bash
-curl -s "http://192.168.3.157:8080/eos/set/param/general/latitude=49.1128" | jq
-curl -s "http://192.168.3.157:8080/eos/set/param/devices/batteries/lfp/max_soc_percentage?value=95" | jq
-curl -s "http://192.168.3.157:8080/eos/set/param/devices/batteries/lfp/capacity_kwh=90" | jq
-curl -s "http://192.168.3.157:8080/eos/set/param/elecprice/charges_ct_per_kwh=3.5" | jq
+curl -s "http://<host-ip>:8080/eos/set/param/general/latitude=49.1128" | jq
+curl -s "http://<host-ip>:8080/eos/set/param/devices/batteries/lfp/max_soc_percentage?value=95" | jq
+curl -s "http://<host-ip>:8080/eos/set/param/devices/batteries/lfp/capacity_kwh=90" | jq
+curl -s "http://<host-ip>:8080/eos/set/param/elecprice/charges_ct_per_kwh=3.5" | jq
 ```
 
 Accepted timestamp params: `ts` or `timestamp` (ISO8601 or unix s/ms).
@@ -184,17 +186,17 @@ Accepted timestamp params: `ts` or `timestamp` (ISO8601 or unix s/ms).
 ## Run / output APIs
 
 ```bash
-curl -s http://192.168.3.157:8080/api/eos/runtime | jq
-curl -s -X POST http://192.168.3.157:8080/api/eos/runs/force | jq
-curl -s http://192.168.3.157:8080/api/eos/runs | jq
-curl -s http://192.168.3.157:8080/api/eos/runs/103/plan | jq
-curl -s http://192.168.3.157:8080/api/eos/runs/103/solution | jq
-curl -s http://192.168.3.157:8080/api/eos/runs/103/plausibility | jq
-curl -s http://192.168.3.157:8080/api/eos/outputs/current | jq
-curl -s http://192.168.3.157:8080/api/eos/outputs/timeline | jq
-curl -s http://192.168.3.157:8080/api/eos/output-signals | jq
-curl -s http://192.168.3.157:8080/eos/get/outputs
-curl -s "http://192.168.3.157:8080/eos/get/outputs?format=json" | jq
+curl -s http://<host-ip>:8080/api/eos/runtime | jq
+curl -s -X POST http://<host-ip>:8080/api/eos/runs/force | jq
+curl -s http://<host-ip>:8080/api/eos/runs | jq
+curl -s http://<host-ip>:8080/api/eos/runs/103/plan | jq
+curl -s http://<host-ip>:8080/api/eos/runs/103/solution | jq
+curl -s http://<host-ip>:8080/api/eos/runs/103/plausibility | jq
+curl -s http://<host-ip>:8080/api/eos/outputs/current | jq
+curl -s http://<host-ip>:8080/api/eos/outputs/timeline | jq
+curl -s http://<host-ip>:8080/api/eos/output-signals | jq
+curl -s http://<host-ip>:8080/eos/get/outputs
+curl -s "http://<host-ip>:8080/eos/get/outputs?format=json" | jq
 ```
 
 Loxone command identifiers from central pull are:
@@ -207,8 +209,8 @@ shaby_target_power_kw:\v
 ## Status endpoints
 
 ```bash
-curl -s http://192.168.3.157:8080/health
-curl -s http://192.168.3.157:8080/status | jq
+curl -s http://<host-ip>:8080/health
+curl -s http://<host-ip>:8080/status | jq
 ```
 
 ## Archived docs

@@ -1,6 +1,6 @@
 # Slice 2 Runbook: Left Pane UI
 
-Note: this document covers the initial left-pane implementation. For discovery/automap/edit-delete extensions, see `docs/slice-2.5-automap.md`.
+Note: this document covers the initial left-pane implementation. For discovery/automap/edit-delete extensions, see `docs/archive/slice-2.5-automap.md`.
 
 Slice 2 introduces the first real frontend with a 3-pane layout and a functional left pane for input mappings and live telemetry.
 
