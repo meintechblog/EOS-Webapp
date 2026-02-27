@@ -2,6 +2,15 @@
 
 Local-first web app as interface for Akkudoktor-EOS.
 
+## Relationship to Akkudoktor-EOS
+
+EOS-Webapp is a companion UI/orchestration layer that builds on top of
+`Akkudoktor-EOS` APIs (prediction, optimization, runtime, and outputs).
+It does not replace EOS core services and expects EOS to be running.
+
+- EOS upstream repository: `https://github.com/Akkudoktor-EOS/EOS`
+- EOS documentation: `https://docs.akkudoktor.net/akkudoktoreos/`
+
 ## Current mode (Slice 10)
 
 The app runs in **HTTP-only setup + central HTTP output pull mode**.
