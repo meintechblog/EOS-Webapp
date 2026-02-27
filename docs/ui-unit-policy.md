@@ -20,6 +20,14 @@ The backend may keep internal EOS-compatible units:
 
 But all conversions must happen transparently so operators only see `ct/kWh`, `kWh`, `kW`.
 
+## Display precision (operator UI)
+
+To avoid floating-point artifacts in the UI, power values shown in `kW` must be
+formatted with max `3` decimals (for example `2.752` instead of
+`2.7520000000000002`).
+
+This is a display rule. Internal numeric precision may remain unchanged.
+
 ## Backend implementation points
 
 Primary file:

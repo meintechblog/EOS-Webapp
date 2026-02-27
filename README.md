@@ -44,6 +44,7 @@ Operator-facing units are fixed:
 - Prices: `ct/kWh`
 - Capacity: `kWh`
 - Power: `kW`
+- Display precision for power in UI: max `3` decimals (`kW`)
 
 Internal storage may still use EOS-compatible units (`EUR/kWh`, `Wh`, `W`) but conversion is transparent in UI/API setup flows.
 

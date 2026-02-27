@@ -872,3 +872,13 @@
   - temporary slot test (`minute=04`, `delay=1`) triggered run `155` at `23:04:01Z`.
   - run `155` finished `success` with `trigger_source=automatic`, `run_mode=aligned_schedule`.
   - switched backend back to default slots `0,15,30,45` after test.
+
+## 2026-02-27 (UI rounding + docs consistency)
+- Fixed setup number input rendering to avoid floating-point display artifacts.
+- `kW` values now render with max 3 decimals in operator-facing setup UI.
+- Added doc clarifications for the precision rule:
+  - `README.md` (`UI Unit Contract`)
+  - `docs/ui-unit-policy.md` (`Display precision`)
+  - `AGENTS.md` (`UI Unit Policy`)
+- Verification:
+  - `cd frontend && npm run build` passed.

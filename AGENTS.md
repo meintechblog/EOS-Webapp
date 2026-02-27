@@ -7,6 +7,7 @@ For every user-facing value in the web UI, keep this policy:
 - Prices: `ct/kWh`
 - Capacity: `kWh`
 - Power: `kW`
+- Power display precision: max `3` decimals in operator-facing UI (`kW`)
 
 Do not show `W`, `Wh`, `EUR/kWh`, or `EUR/Wh` to operators in the UI.
 
