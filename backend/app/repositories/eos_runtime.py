@@ -7,15 +7,12 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.db.models import (
-    ControlTarget,
     EosArtifact,
-    EosMqttOutputEvent,
     EosPlanInstruction,
-    EosPredictionPoint,
     EosRun,
     EosRunInputSnapshot,
-    OutputDispatchEvent,
-    OutputTarget,
+    OutputSignalAccessState,
+    RuntimePreference,
 )
 
 
@@ -51,6 +48,16 @@ def get_run_by_eos_last_run_datetime(db: Session, eos_last_run_datetime: datetim
 
 def list_runs(db: Session, limit: int = 50) -> list[EosRun]:
     return list(db.scalars(select(EosRun).order_by(EosRun.created_at.desc()).limit(limit)))
+
+
+def list_running_runs(db: Session) -> list[EosRun]:
+    return list(
+        db.scalars(
+            select(EosRun)
+            .where(EosRun.status == "running")
+            .order_by(EosRun.started_at.asc(), EosRun.id.asc())
+        )
+    )
 
 
 def get_latest_successful_run(db: Session) -> EosRun | None:
@@ -150,41 +157,6 @@ def get_latest_artifact(
     return db.scalars(stmt.order_by(EosArtifact.created_at.desc(), EosArtifact.id.desc())).first()
 
 
-def replace_prediction_points(
-    db: Session,
-    *,
-    run_id: int,
-    prediction_key: str,
-    points: list[tuple[datetime, float | None]],
-) -> None:
-    db.query(EosPredictionPoint).filter(
-        EosPredictionPoint.run_id == run_id,
-        EosPredictionPoint.prediction_key == prediction_key,
-    ).delete(synchronize_session=False)
-
-    for ts, value in points:
-        db.add(
-            EosPredictionPoint(
-                run_id=run_id,
-                prediction_key=prediction_key,
-                ts=ts,
-                value=value,
-            )
-        )
-
-    db.commit()
-
-
-def list_prediction_points_for_run(db: Session, run_id: int) -> list[EosPredictionPoint]:
-    return list(
-        db.scalars(
-            select(EosPredictionPoint)
-            .where(EosPredictionPoint.run_id == run_id)
-            .order_by(EosPredictionPoint.prediction_key.asc(), EosPredictionPoint.ts.asc())
-        )
-    )
-
-
 def replace_plan_instructions(
     db: Session,
     *,
@@ -230,36 +202,6 @@ def list_plan_instructions_for_run(db: Session, run_id: int) -> list[EosPlanInst
             .order_by(EosPlanInstruction.instruction_index.asc())
         )
     )
-
-
-def add_output_event(
-    db: Session,
-    *,
-    run_id: int,
-    topic: str,
-    payload_json: dict[str, Any] | list[Any],
-    qos: int,
-    retain: bool,
-    publish_status: str,
-    output_kind: str = "unknown",
-    resource_id: str | None = None,
-    error_text: str | None = None,
-) -> EosMqttOutputEvent:
-    event = EosMqttOutputEvent(
-        run_id=run_id,
-        topic=topic,
-        payload_json=payload_json,
-        qos=qos,
-        retain=retain,
-        output_kind=output_kind,
-        resource_id=resource_id,
-        publish_status=publish_status,
-        error_text=error_text,
-    )
-    db.add(event)
-    db.commit()
-    db.refresh(event)
-    return event
 
 
 def upsert_run_input_snapshot(
@@ -313,238 +255,88 @@ def get_run_input_snapshot(db: Session, run_id: int) -> EosRunInputSnapshot | No
     ).first()
 
 
-def list_output_events(db: Session, limit: int = 100) -> list[EosMqttOutputEvent]:
+def get_runtime_preference(db: Session, *, key: str) -> RuntimePreference | None:
+    return db.get(RuntimePreference, key)
+
+
+def upsert_runtime_preference(
+    db: Session,
+    *,
+    key: str,
+    value_json: dict[str, Any] | list[Any] | str | int | float | bool | None,
+) -> RuntimePreference:
+    existing = get_runtime_preference(db, key=key)
+    if existing is None:
+        preference = RuntimePreference(
+            key=key,
+            value_json=value_json,
+        )
+        db.add(preference)
+        db.commit()
+        db.refresh(preference)
+        return preference
+
+    existing.value_json = value_json  # type: ignore[assignment]
+    db.add(existing)
+    db.commit()
+    db.refresh(existing)
+    return existing
+
+
+def get_output_signal_access_state(
+    db: Session,
+    *,
+    signal_key: str,
+) -> OutputSignalAccessState | None:
+    return db.get(OutputSignalAccessState, signal_key)
+
+
+def list_output_signal_access_states(
+    db: Session,
+    *,
+    signal_keys: list[str],
+) -> list[OutputSignalAccessState]:
+    if not signal_keys:
+        return []
     return list(
         db.scalars(
-            select(EosMqttOutputEvent)
-            .order_by(desc(EosMqttOutputEvent.published_at), desc(EosMqttOutputEvent.id))
-            .limit(limit)
+            select(OutputSignalAccessState).where(
+                OutputSignalAccessState.signal_key.in_(signal_keys)
+            )
         )
     )
 
 
-def list_output_targets(db: Session) -> list[OutputTarget]:
-    return list(db.scalars(select(OutputTarget).order_by(OutputTarget.resource_id.asc())))
-
-
-def get_output_target_by_id(db: Session, target_id: int) -> OutputTarget | None:
-    return db.get(OutputTarget, target_id)
-
-
-def get_output_target_by_resource_id(db: Session, resource_id: str) -> OutputTarget | None:
-    return db.scalars(select(OutputTarget).where(OutputTarget.resource_id == resource_id)).first()
-
-
-def create_output_target(
+def upsert_output_signal_access_state(
     db: Session,
     *,
-    resource_id: str,
-    webhook_url: str,
-    method: str = "POST",
-    headers_json: dict[str, Any] | list[Any] | None = None,
-    enabled: bool = True,
-    timeout_seconds: int = 10,
-    retry_max: int = 2,
-    payload_template_json: dict[str, Any] | list[Any] | None = None,
-) -> OutputTarget:
-    target = OutputTarget(
-        resource_id=resource_id,
-        webhook_url=webhook_url,
-        method=method,
-        headers_json=headers_json or {},
-        enabled=enabled,
-        timeout_seconds=timeout_seconds,
-        retry_max=retry_max,
-        payload_template_json=payload_template_json,
-    )
-    db.add(target)
-    db.commit()
-    db.refresh(target)
-    return target
-
-
-def update_output_target(
-    db: Session,
-    target: OutputTarget,
-    *,
-    resource_id: str | None = None,
-    webhook_url: str | None = None,
-    method: str | None = None,
-    headers_json: dict[str, Any] | list[Any] | None | object = ...,
-    enabled: bool | None = None,
-    timeout_seconds: int | None = None,
-    retry_max: int | None = None,
-    payload_template_json: dict[str, Any] | list[Any] | None | object = ...,
-) -> OutputTarget:
-    if resource_id is not None:
-        target.resource_id = resource_id
-    if webhook_url is not None:
-        target.webhook_url = webhook_url
-    if method is not None:
-        target.method = method
-    if headers_json is not ...:
-        target.headers_json = headers_json or {}  # type: ignore[assignment]
-    if enabled is not None:
-        target.enabled = enabled
-    if timeout_seconds is not None:
-        target.timeout_seconds = timeout_seconds
-    if retry_max is not None:
-        target.retry_max = retry_max
-    if payload_template_json is not ...:
-        target.payload_template_json = payload_template_json  # type: ignore[assignment]
-
-    db.add(target)
-    db.commit()
-    db.refresh(target)
-    return target
-
-
-def get_output_dispatch_event_by_idempotency_key(
-    db: Session,
-    *,
-    idempotency_key: str,
-) -> OutputDispatchEvent | None:
-    return db.scalars(
-        select(OutputDispatchEvent).where(OutputDispatchEvent.idempotency_key == idempotency_key)
-    ).first()
-
-
-def has_output_dispatch_events_for_key_prefix(
-    db: Session,
-    *,
-    idempotency_prefix: str,
-) -> bool:
-    row = db.execute(
-        select(OutputDispatchEvent.id)
-        .where(OutputDispatchEvent.idempotency_key.like(f"{idempotency_prefix}%"))
-        .limit(1)
-    ).first()
-    return row is not None
-
-
-def create_output_dispatch_event(
-    db: Session,
-    *,
-    run_id: int | None,
+    signal_key: str,
     resource_id: str | None,
-    execution_time: datetime | None,
-    dispatch_kind: str,
-    target_url: str | None,
-    request_payload_json: dict[str, Any] | list[Any],
-    status: str,
-    http_status: int | None,
-    error_text: str | None,
-    idempotency_key: str,
-) -> OutputDispatchEvent:
-    event = OutputDispatchEvent(
-        run_id=run_id,
-        resource_id=resource_id,
-        execution_time=execution_time,
-        dispatch_kind=dispatch_kind,
-        target_url=target_url,
-        request_payload_json=request_payload_json,
-        status=status,
-        http_status=http_status,
-        error_text=error_text,
-        idempotency_key=idempotency_key,
-    )
-    db.add(event)
+    last_fetch_ts: datetime,
+    last_fetch_client: str | None,
+) -> OutputSignalAccessState:
+    existing = get_output_signal_access_state(db, signal_key=signal_key)
+    if existing is None:
+        state = OutputSignalAccessState(
+            signal_key=signal_key,
+            resource_id=resource_id,
+            last_fetch_ts=last_fetch_ts,
+            last_fetch_client=last_fetch_client,
+            fetch_count=1,
+        )
+        db.add(state)
+        db.commit()
+        db.refresh(state)
+        return state
+
+    existing.resource_id = resource_id
+    existing.last_fetch_ts = last_fetch_ts
+    existing.last_fetch_client = last_fetch_client
+    existing.fetch_count = int(existing.fetch_count or 0) + 1
+    db.add(existing)
     db.commit()
-    db.refresh(event)
-    return event
-
-
-def list_output_dispatch_events(
-    db: Session,
-    *,
-    limit: int = 200,
-    run_id: int | None = None,
-    resource_id: str | None = None,
-    from_ts: datetime | None = None,
-    to_ts: datetime | None = None,
-) -> list[OutputDispatchEvent]:
-    stmt = select(OutputDispatchEvent)
-    if run_id is not None:
-        stmt = stmt.where(OutputDispatchEvent.run_id == run_id)
-    if resource_id is not None:
-        stmt = stmt.where(OutputDispatchEvent.resource_id == resource_id)
-    if from_ts is not None:
-        stmt = stmt.where(OutputDispatchEvent.execution_time >= from_ts)
-    if to_ts is not None:
-        stmt = stmt.where(OutputDispatchEvent.execution_time <= to_ts)
-    stmt = stmt.order_by(desc(OutputDispatchEvent.created_at), desc(OutputDispatchEvent.id)).limit(limit)
-    return list(db.scalars(stmt))
-
-
-def list_control_targets(db: Session) -> list[ControlTarget]:
-    return list(db.scalars(select(ControlTarget).order_by(ControlTarget.resource_id.asc())))
-
-
-def get_control_target_by_id(db: Session, target_id: int) -> ControlTarget | None:
-    return db.get(ControlTarget, target_id)
-
-
-def get_control_target_by_resource_id(db: Session, resource_id: str) -> ControlTarget | None:
-    return db.scalars(select(ControlTarget).where(ControlTarget.resource_id == resource_id)).first()
-
-
-def create_control_target(
-    db: Session,
-    *,
-    resource_id: str,
-    command_topic: str,
-    enabled: bool,
-    dry_run_only: bool,
-    qos: int,
-    retain: bool,
-    payload_template_json: dict[str, Any] | list[Any] | None,
-) -> ControlTarget:
-    target = ControlTarget(
-        resource_id=resource_id,
-        command_topic=command_topic,
-        enabled=enabled,
-        dry_run_only=dry_run_only,
-        qos=qos,
-        retain=retain,
-        payload_template_json=payload_template_json,
-    )
-    db.add(target)
-    db.commit()
-    db.refresh(target)
-    return target
-
-
-def update_control_target(
-    db: Session,
-    target: ControlTarget,
-    *,
-    resource_id: str | None = None,
-    command_topic: str | None = None,
-    enabled: bool | None = None,
-    dry_run_only: bool | None = None,
-    qos: int | None = None,
-    retain: bool | None = None,
-    payload_template_json: dict[str, Any] | list[Any] | None | object = ...,
-) -> ControlTarget:
-    if resource_id is not None:
-        target.resource_id = resource_id
-    if command_topic is not None:
-        target.command_topic = command_topic
-    if enabled is not None:
-        target.enabled = enabled
-    if dry_run_only is not None:
-        target.dry_run_only = dry_run_only
-    if qos is not None:
-        target.qos = qos
-    if retain is not None:
-        target.retain = retain
-    if payload_template_json is not ...:
-        target.payload_template_json = payload_template_json  # type: ignore[assignment]
-
-    db.add(target)
-    db.commit()
-    db.refresh(target)
-    return target
+    db.refresh(existing)
+    return existing
 
 
 def _parse_datetime(value: Any) -> datetime | None:

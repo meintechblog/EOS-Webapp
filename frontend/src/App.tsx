@@ -1369,11 +1369,7 @@ export default function App() {
     [isForcingRun, isRefreshingPrediction, runtime],
   );
 
-  const autoRunControlDisabled =
-    isSavingAutoRunPreset ||
-    isForcingRun ||
-    isRefreshingPrediction !== null ||
-    Boolean(runtime?.collector.force_run_in_progress);
+  const autoRunControlDisabled = isSavingAutoRunPreset;
 
   const applyAutoRunPreset = useCallback(
     async (preset: EosAutoRunPreset) => {
@@ -1543,6 +1539,35 @@ export default function App() {
 
   const visibleOutputCurrent = useMemo(() => outputCurrent, [outputCurrent]);
   const visibleOutputTimeline = useMemo(() => outputTimeline, [outputTimeline]);
+  const effectiveOutputRunId = useMemo(() => {
+    const runIds: number[] = [];
+    for (const row of visibleOutputCurrent) {
+      if (typeof row.run_id === "number") {
+        runIds.push(row.run_id);
+      }
+    }
+    if (runIds.length === 0) {
+      for (const row of visibleOutputTimeline) {
+        if (typeof row.run_id === "number") {
+          runIds.push(row.run_id);
+          break;
+        }
+      }
+    }
+    if (runIds.length === 0 && plausibility && typeof plausibility.run_id === "number") {
+      runIds.push(plausibility.run_id);
+    }
+    if (runIds.length === 0) {
+      return null;
+    }
+    return runIds[0];
+  }, [visibleOutputCurrent, visibleOutputTimeline, plausibility]);
+  const outputFallbackActive = useMemo(() => {
+    if (selectedRunId === null || effectiveOutputRunId === null) {
+      return false;
+    }
+    return selectedRunId !== effectiveOutputRunId;
+  }, [selectedRunId, effectiveOutputRunId]);
   const visibleOutputSignals = useMemo<EosOutputSignalItem[]>(() => {
     if (!outputSignalsBundle?.signals) {
       return [];
@@ -1849,6 +1874,12 @@ export default function App() {
           <p className="pane-copy">
             Konkrete Ausführung aus EOS-Plan: aktive Entscheidungen, Zustandswechsel und HTTP-Pull-Signale.
           </p>
+          {outputFallbackActive ? (
+            <p className="meta-text">
+              Hinweis: Fur den ausgewahlten Run #{selectedRunId} sind keine verwertbaren Entscheidungen vorhanden.
+              Die Output-Anzeige verwendet daher Run #{effectiveOutputRunId}.
+            </p>
+          ) : null}
 
           <OutputChartsPanel
             runId={selectedRunId}

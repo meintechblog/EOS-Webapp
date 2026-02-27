@@ -55,26 +55,30 @@ check_fields '
 ' "price surcharge is shown as ct/kWh"
 
 check_fields '
-  def idx: map({key: .field_id, value: .}) | from_entries;
-  (idx["param.devices.batteries.0.capacity_wh"] // {} | .unit) == "kWh"
-' "battery capacity is shown as kWh"
+  [
+    .[]
+    | select(
+        (.field_id | test("^param\\.devices\\.batteries\\.[0-9]+\\.capacity_wh$"))
+        or (.field_id | test("^param\\.devices\\.electric_vehicles\\.[0-9]+\\.capacity_wh$"))
+        or (.field_id | test("^param\\.devices\\.home_appliances\\.[0-9]+\\.consumption_wh$"))
+      )
+    | .unit == "kWh"
+  ]
+  | all
+' "all capacity/consumption fields are shown as kWh"
 
 check_fields '
-  (map({key: .field_id, value: .}) | from_entries) as $idx
-  |
   [
-    "param.pvforecast.planes.0.peakpower",
-    "param.pvforecast.planes.0.inverter_paco",
-    "param.devices.batteries.0.min_charge_power_w",
-    "param.devices.batteries.0.max_charge_power_w",
-    "param.devices.inverters.0.max_power_w",
-    "signal.house_load_w",
-    "signal.pv_power_w",
-    "signal.grid_import_w",
-    "signal.grid_export_w",
-    "signal.battery_power_w"
+    .[]
+    | select(
+        (.field_id | test("^param\\.pvforecast\\.planes\\.[0-9]+\\.(peakpower|inverter_paco)$"))
+        or (.field_id | test("^param\\.devices\\.batteries\\.[0-9]+\\.(min_charge_power_w|max_charge_power_w)$"))
+        or (.field_id | test("^param\\.devices\\.inverters\\.[0-9]+\\.max_power_w$"))
+        or (.field_id | test("^param\\.devices\\.electric_vehicles\\.[0-9]+\\.(min_charge_power_w|max_charge_power_w)$"))
+        or (.field_id | test("^signal\\.(house_load_w|pv_power_w|grid_import_w|grid_export_w|battery_power_w)$"))
+      )
+    | .unit == "kW"
   ]
-  | map((($idx[.] // {}) | .unit) == "kW")
   | all
 ' "all power fields are shown as kW"
 

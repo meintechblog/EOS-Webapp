@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.eos_output_signals import router as eos_output_signals_router
-from app.api.eos_runtime import router as eos_runtime_router
+from app.api.eos_runtime import get_run_plausibility, router as eos_runtime_router
 from app.core.config import Settings
 from app.db.session import get_db
 from app.dependencies import get_output_projection_service
@@ -294,6 +294,113 @@ class OutputSignalApiTests(TestCase):
         client = TestClient(app)
         response = client.get("/eos/get/signal/battery_target_power_kw")
         self.assertEqual(response.status_code, 404)
+
+
+class OutputFallbackTests(TestCase):
+    def test_get_current_outputs_falls_back_to_latest_dispatchable_run(self) -> None:
+        service = OutputProjectionService(settings=Settings())
+        requested_run_id = 919
+        fallback_run_id = 812
+        runtime_snapshot = {
+            "devices": {
+                "batteries": [
+                    {
+                        "max_charge_power_w": 6000,
+                        "device_id": "shaby",
+                    }
+                ]
+            }
+        }
+        fallback_instruction = _instruction(
+            instruction_id=1,
+            run_id=fallback_run_id,
+            resource_id="battery1",
+            mode="FORCED_CHARGE",
+            factor=0.5,
+        )
+
+        def _list_instructions(_db: Any, run_id: int) -> list[SimpleNamespace]:
+            if run_id == requested_run_id:
+                return []
+            if run_id == fallback_run_id:
+                return [fallback_instruction]
+            return []
+
+        with patch(
+            "app.services.output_projection.list_plan_instructions_for_run",
+            side_effect=_list_instructions,
+        ), patch(
+            "app.services.output_projection.get_latest_successful_run_with_plan",
+            return_value=SimpleNamespace(id=fallback_run_id),
+        ), patch(
+            "app.services.output_projection.get_run_input_snapshot",
+            return_value=SimpleNamespace(runtime_config_snapshot_json=runtime_snapshot),
+        ), patch(
+            "app.services.output_projection.get_latest_power_samples",
+            return_value=[],
+        ):
+            selected_run_id, rows = service.get_current_outputs(object(), run_id=requested_run_id)  # type: ignore[arg-type]
+
+        self.assertEqual(selected_run_id, fallback_run_id)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["run_id"], fallback_run_id)
+
+    def test_plausibility_uses_dispatchable_fallback_run(self) -> None:
+        service = OutputProjectionService(settings=Settings())
+        requested_run_id = 919
+        fallback_run_id = 812
+        plan_artifact = SimpleNamespace(payload_json={"id": "plan-812"})
+        solution_artifact = SimpleNamespace(
+            payload_json={
+                "grid_consumption_energy_wh": 1200,
+                "grid_feedin_energy_wh": 0,
+                "costs_amt": 0.3,
+            }
+        )
+
+        def _artifact_for_run(
+            _db: Any,
+            *,
+            run_id: int,
+            artifact_type: str,
+            artifact_key: str | None = None,
+        ) -> SimpleNamespace | None:
+            del artifact_key
+            if run_id != fallback_run_id:
+                return None
+            if artifact_type == "plan":
+                return plan_artifact
+            if artifact_type == "solution":
+                return solution_artifact
+            return None
+
+        with patch(
+            "app.api.eos_runtime.get_run_by_id",
+            return_value=SimpleNamespace(id=requested_run_id),
+        ), patch.object(
+            service,
+            "resolve_dispatchable_run_id",
+            return_value=fallback_run_id,
+        ), patch(
+            "app.api.eos_runtime.get_latest_artifact_for_run",
+            side_effect=_artifact_for_run,
+        ), patch.object(
+            service,
+            "get_timeline",
+            return_value=(fallback_run_id, [{"instruction_id": 1}]),
+        ):
+            response = get_run_plausibility(
+                run_id=requested_run_id,
+                db=object(),  # type: ignore[arg-type]
+                projection_service=service,
+            )
+
+        self.assertEqual(response.run_id, fallback_run_id)
+        finding_codes = {item.code for item in response.findings}
+        self.assertIn("fallback_run_used", finding_codes)
+        self.assertNotIn("missing_plan", finding_codes)
+        self.assertNotIn("missing_solution", finding_codes)
+        self.assertNotEqual(response.status, "error")
 
 
 class LegacyEndpointRemovalTests(TestCase):

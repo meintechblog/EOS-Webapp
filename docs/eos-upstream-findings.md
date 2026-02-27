@@ -142,3 +142,25 @@ Before opening upstream issues, capture one fresh run with:
 4. relevant `prediction_series` artifacts
 
 Then open 1-2 focused upstream issues (core code defect separately from data irregularity).
+
+## EOS-UPSTREAM-005
+
+- Title: `prediction/list` can look complete while raw `prediction/series` history is much shorter
+- Status: `observed_behavior`
+- Observed at: 2026-02-21 (local EOS API)
+
+### Observation
+
+- For `elecprice_marketprice_wh`, `prediction/list` with `interval=1 hour` can return a full 4-week length.
+- At the same time, raw `prediction/series` can contain only a much shorter real history window.
+- This can mislead quality checks if list length is used as proxy for true historical coverage.
+
+### Implication
+
+- Prediction quality heuristics in EOS-Webapp should rely on raw `prediction/series` timestamps for backfill decisions.
+- `prediction/list` should remain diagnostics only (resampled/interpolated view).
+
+### Notes
+
+- Behavior is consistent with resampling/interpolation in container/data access paths.
+- Not necessarily a bug, but critical for integrators evaluating data sufficiency.

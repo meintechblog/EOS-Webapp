@@ -9,3 +9,63 @@
 [2026-02-19T15:19:40Z] Cleaned temporary proxy test mapping and re-verified frontend API proxy on :3000
 [2026-02-19T15:30:40Z] Added EOS-field catalog endpoint + frontend dropdowns for EOS field/unit + payload_path inline help
 [2026-02-19T15:31:40Z] Verified /api/eos-fields via backend+frontend proxy and cleaned temporary test mapping (restored baseline mappings)
+[2026-02-19T15:02:40Z] Slice-2.5 backend implemented: discovery table+upsert, automap service, delete mapping API, mapping multiplier/sign fields
+[2026-02-19T15:03:20Z] Slice-2.5 frontend implemented: automap action/result, discovered topics panel, mapping edit/delete, field info notes
+[2026-02-19T15:04:10Z] Verified Slice-2.5 E2E: automap apply, conflict skip, delete cascade, sign inversion, prefix normalization warnings
+[2026-02-19T15:05:55Z] Finalized Slice-2.5 docs/runbooks and restored clean runtime mapping baseline after validation
+[2026-02-19T15:29:50Z] Updated refresh-discovery behavior to active eos/input topics only and added green configured-state highlighting in Automap list
+[2026-02-19T15:30:20Z] Added grid_power_consumption_kw automap/sign convention handling (positive import, negative export) and updated UI guidance
+[2026-02-19T15:53:10Z] Added fixed-value mapping source support (DB/API/UI/live-values), with XOR source validation and docs/worklog updates
+[2026-02-19T16:03:00Z] Updated automap synonyms for battery_power_charge_kw (plus charging/discharging variants) -> battery_power_w and validated discovery/apply
+[2026-02-19T16:10:05Z] Added EUR/kWh tariff unit option and hid sign convention for fixed-value mappings in New Mapping/Edit flows
+[2026-02-19T16:12:40Z] Improved frontend value formatting to avoid scientific notation for small numeric live values
+[2026-02-19T16:16:30Z] Added unit-aware multiplier preselection in New Mapping and mirrored inference in Edit for field/unit changes
+[2026-02-19T16:20:20Z] Hid status badge for fixed-value mappings in Configured Mappings (no HEALTHY label)
+[2026-02-19T16:24:20Z] Added practical EOS field guidance texts for OpenAPI optimization fields (esp. gesamtlast) with array/unit/live hints
+[2026-02-19T16:28:40Z] Added field-aware unit select to Edit Mapping and synced automatic value_multiplier inference with New Mapping
+[2026-02-19T18:45:00Z] Implemented Slice-3 backend: EOS orchestrator collector, force-run pulse_then_legacy, eos_* persistence, /api/eos/* endpoints, and status integration
+[2026-02-19T18:52:00Z] Implemented Slice-3 frontend: runtime/run/output/control-target panes plus README/docs updates
+[2026-02-19T18:13:18Z] Implemented Slice-4 parameters profiles (backend APIs/services + frontend Parameters tab + strict import/export) and verified via docker build + alembic upgrade + API smoke tests
+[2026-02-19T18:43:14Z] Implemented Slice-5 data backbone: signal_* schema, dual-write ingest, run context snapshots, rollup/retention jobs, data APIs, and status metrics
+[2026-02-19T22:07:30Z] Implemented Slice-5.5 EMR pipeline (power_samples + energy_emr), EOS measurement sync APIs/service, timestamp_path mapping support, parameter measurement fields, and frontend Outputs/Parameters integration
+[2026-02-19T22:15:37Z] Installed jq on VM for OpenAPI/config inspection and JSON debugging workflows
+[2026-02-19T22:15:37Z] Updated EMR safety: battery signed power retention (+charge/-discharge), per-key power limits, and grid conflict threshold rule (>50W)
+[2026-02-19T22:15:37Z] Extended EOS measurement sync payload with SOC aliases (battery_soc_pct + battery_soc_percent) and verified force-run warnings include SOC keys
+[2026-02-19T22:17:31Z] Added dispatch safety guard: block battery charge command publish when live grid_import_w exceeds configurable threshold
+[2026-02-19T22:17:31Z] Added EOS pricing provider guidance in Parameters catalog (import/fixed providers in current EOS OpenAPI)
+[2026-02-19T22:24:15Z] Mapped Hallbude import payload to strict EOS Settings schema and applied as new draft revision (profile=3 rev=2 source=import)
+[2026-02-19T22:24:15Z] Fixed validator conflict for measurement.keys (accepted as explicit extension field in strict mode)
+[2026-02-19T22:24:15Z] Verified profile-3 draft validate returns valid=true with mapped devices/pvforecast/measurement and import-based tariff payloads
+[2026-02-20T23:10:00Z] Implemented Slice-7 dynamic parameter pipeline + setup checklist APIs + Inputs&Setup tab UI; backend/frontend compile/build passed
+[2026-02-21T00:05:00Z] Completed Slice-7 UI refactor: full Parameters in left Setup tab, middle Run-Center only; backend compile + frontend build passed
+2026-02-20T12:38:30Z | slice-7 ux simplification: single-profile ui + central setup import/export package
+2026-02-20T12:49:55Z | ui declutter: top-level setup import/export + single-state save/apply buttons
+2026-02-20T12:53:04Z | ui cleanup final: profile-free setup wording + unified eos-inputs-setup export + frontend redeploy
+2026-02-20T17:50:00Z | hotfix: restored HTTP signal -> EMR ingestion path (power_samples + energy_emr updates from /eos/set/signal/*)
+2026-02-20T17:50:00Z | hotfix: setup rejected updates no longer persist invalid draft values (keeps last valid field state)
+2026-02-20T17:50:00Z | ux fix: setup field errors shown only when field currently invalid/missing
+2026-02-20T17:50:00Z | output api fix: force dispatch now reports actual queued active resources
+2026-02-20T17:50:00Z | verification: force run 113 success + outputs timeline/events + EMR growth confirmed on live stack
+2026-02-20T17:52:00Z | measurement sync semantics tightened: skipped optional keys no longer downgrade run status to partial
+2026-02-20T17:52:00Z | run-center validation: force run 114 finished success with plan+solution artifacts
+2026-02-20T18:12:00Z | run-center extended: prediction refresh run types (pv/prices/all/load) added via /api/eos/runs/predictions/refresh
+2026-02-20T18:12:00Z | dispatch safety: default output run selection now requires successful run with plan instructions
+2026-02-20T18:12:00Z | verified live: prediction refresh runs persisted, force run 122 success, outputs remain bound to latest dispatchable run
+2026-02-20T18:14:00Z | prediction refresh error summarization improved (concise provider errors without tracebacks)
+2026-02-20T18:14:00Z | confirmed run behavior: prediction refresh partial on upstream PV provider 400, force optimization run 127 success
+2026-02-20T21:52:02Z | force-run preflight extended: optional prediction refresh (scope configurable) + DB->EOS measurement pre-push before pulse
+2026-02-20T21:52:02Z | run context snapshot now includes previous successful dispatchable run metadata for traceable run chaining
+2026-02-20T21:52:02Z | measurement sync preflight now uses EOS measurement registry (/v1/measurement/keys) and skips unavailable keys with explicit reasons
+2026-02-20T22:11:00Z | hotfix: added PV prediction fallback in orchestrator (PVForecastAkkudoktor -> PVForecastImport) on upstream 400 refresh errors
+2026-02-20T22:11:00Z | force-run validation: run 144 success (plan+solution+prediction artifacts)
+2026-02-20T22:11:00Z | fallback validation: run 145 success with prediction_refresh artifact.fallback_applied.applied=true after forcing provider back to PVForecastAkkudoktor
+2026-02-20T22:11:00Z | root-cause confirmed: direct EOS /v1/prediction/update* still fails for PVForecastAkkudoktor due upstream azimuth handling; webapp now recovers automatically for force-run pre-refresh
+2026-02-20T22:13:00Z | regression check: force run 146 success with fallback_applied recorded and no partial/failed pre-refresh
+2026-02-20T22:20:00Z | fix: PVForecastAkkudoktor south-azimuth apply workaround implemented in ParameterProfileService (UI/profile keeps 180, EOS apply maps 180->360)
+2026-02-20T22:20:00Z | verification: /eos/set/param update applied profile, EOS config surface_azimuth became 360 and direct /v1/prediction/update/PVForecastAkkudoktor returned 200
+2026-02-20T22:20:00Z | verification: force run 147 success with empty prediction_refresh.fallback_applied (native provider path worked, no fallback needed)
+2026-02-20T22:28:00Z | refinement: changed PVForecastAkkudoktor azimuth workaround from 180->360 to 180->179.9 (near-south edge-case avoider)
+2026-02-20T22:28:00Z | verification: EOS config stores 179.9 while setup UI still shows 180; direct provider refresh returns 200; force run 148 success without fallback
+2026-02-20T22:28:00Z | ui: added inline azimuth compatibility hint for field param.pvforecast.planes.0.surface_azimuth when provider=PVForecastAkkudoktor
+2026-02-20T22:36:00Z | config switch: elecprice.provider -> ElecPriceEnergyCharts (DE-LU), feedintariff.provider -> FeedInTariffFixed (0.09 EUR/kWh)
+2026-02-20T22:36:00Z | verification: elecprice_marketprice_wh now non-constant (48 points, 45 unique), provider refresh 200, force run 149 success

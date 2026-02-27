@@ -50,17 +50,16 @@ def upsert_power_sample(
     value_w: float,
     source: str,
     quality: str = "ok",
-    mapping_id: int | None = None,
     raw_payload: str | None = None,
 ) -> None:
     db.execute(
         text(
             """
             INSERT INTO power_samples
-                (ts, key, value_w, source, quality, mapping_id, raw_payload, ingested_at)
+                (ts, key, value_w, source, quality, raw_payload, ingested_at)
             VALUES
-                (:ts, :key, :value_w, :source, :quality, :mapping_id, :raw_payload, now())
-            ON CONFLICT (key, ts, source, COALESCE(mapping_id, 0))
+                (:ts, :key, :value_w, :source, :quality, :raw_payload, now())
+            ON CONFLICT (key, ts, source)
             DO UPDATE SET
                 value_w = EXCLUDED.value_w,
                 quality = EXCLUDED.quality,
@@ -74,7 +73,6 @@ def upsert_power_sample(
             "value_w": value_w,
             "source": source,
             "quality": quality,
-            "mapping_id": mapping_id,
             "raw_payload": raw_payload,
         },
     )
@@ -137,7 +135,7 @@ def get_latest_power_samples(
             text(
                 """
                 SELECT DISTINCT ON (key)
-                    key, ts, value_w, source, quality, mapping_id, raw_payload, ingested_at
+                    key, ts, value_w, source, quality, raw_payload, ingested_at
                 FROM power_samples
                 WHERE key = ANY(:keys)
                 ORDER BY key ASC, ts DESC, id DESC
@@ -150,7 +148,7 @@ def get_latest_power_samples(
             text(
                 """
                 SELECT DISTINCT ON (key)
-                    key, ts, value_w, source, quality, mapping_id, raw_payload, ingested_at
+                    key, ts, value_w, source, quality, raw_payload, ingested_at
                 FROM power_samples
                 ORDER BY key ASC, ts DESC, id DESC
                 """
@@ -169,7 +167,7 @@ def get_power_series(
     rows = db.execute(
         text(
             """
-            SELECT key, ts, value_w, source, quality, mapping_id, raw_payload, ingested_at
+            SELECT key, ts, value_w, source, quality, raw_payload, ingested_at
             FROM power_samples
             WHERE key = :key
               AND ts >= :from_ts

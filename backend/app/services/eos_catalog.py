@@ -14,7 +14,7 @@ _OPENAPI_FIELD_HELP_OVERRIDES: dict[str, tuple[str, list[str]]] = {
         [
             "Erwartet ein JSON-Array mit einem Verbrauchswert pro EOS-Zeitintervall, z. B. [420, 380, 410, ...].",
             "Einheit ist intern W je Intervallwert. Falls die Quelle kW liefert, multiplier im Mapping auf 1000 setzen.",
-            "Fuer Live-Einzelwerte aus MQTT ist meistens house_load_w die passendere Feldwahl.",
+            "Fuer Live-Einzelwerte ist meistens house_load_w die passendere Feldwahl.",
         ],
     ),
     "pv_prognose_wh": (
@@ -22,7 +22,7 @@ _OPENAPI_FIELD_HELP_OVERRIDES: dict[str, tuple[str, list[str]]] = {
         [
             "Erwartet ein JSON-Array mit einem Prognosewert pro EOS-Zeitintervall.",
             "Das ist eine Prognose-Zeitreihe, kein einzelner Live-Messwert vom aktuellen Zeitpunkt.",
-            "Bei Live-PV-Daten aus MQTT ist meistens pv_power_w die passendere Feldwahl.",
+            "Bei Live-PV-Daten ist meistens pv_power_w die passendere Feldwahl.",
         ],
     ),
     "strompreis_euro_pro_wh": (
@@ -43,7 +43,7 @@ _OPENAPI_FIELD_HELP_OVERRIDES: dict[str, tuple[str, list[str]]] = {
     "preis_euro_pro_wh_akku": (
         "Bewertungskosten je Wh fuer Akku-Energie (z. B. Verschleiss-/Nutzungskosten).",
         [
-            "Typischerweise ein fixer Wert statt Live-MQTT-Signal.",
+            "Typischerweise ein fixer Wert statt Live-Signal.",
             "EOS arbeitet intern mit EUR/Wh. Bei Eingabe in EUR/kWh den multiplier auf 0.001 setzen.",
         ],
     ),
@@ -142,13 +142,13 @@ class EosFieldCatalogService:
             (
                 "pv_power_w",
                 "PV Power",
-                "Current PV power input, typically published as live MQTT telemetry.",
+                "Current PV power input, typically published as live signal telemetry.",
                 [],
             ),
             (
                 "house_load_w",
                 "House Load",
-                "Current total household load input, typically published as live MQTT telemetry.",
+                "Current total household load input, typically published as live signal telemetry.",
                 [],
             ),
             (

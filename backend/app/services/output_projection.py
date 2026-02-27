@@ -91,6 +91,15 @@ class OutputProjectionService:
             )
         return selected_run_id, items
 
+    def resolve_dispatchable_run_id(
+        self,
+        db: Session,
+        *,
+        run_id: int | None = None,
+    ) -> int | None:
+        selected_run_id, _ = self._load_run_instructions(db, run_id=run_id)
+        return selected_run_id
+
     def get_timeline(
         self,
         db: Session,
@@ -258,12 +267,28 @@ class OutputProjectionService:
         *,
         run_id: int | None,
     ) -> tuple[int | None, list[NormalizedInstruction]]:
-        selected_run_id = run_id
-        if selected_run_id is None:
-            run = get_latest_successful_run_with_plan(db)
-            if run is None:
-                return None, []
-            selected_run_id = int(run.id)
+        if run_id is not None:
+            requested_instructions = _normalize_instructions(list_plan_instructions_for_run(db, run_id))
+            if requested_instructions:
+                return run_id, requested_instructions
+
+            fallback_run = get_latest_successful_run_with_plan(db)
+            if fallback_run is None:
+                return run_id, []
+            fallback_run_id = int(fallback_run.id)
+            if fallback_run_id == run_id:
+                return run_id, []
+            fallback_instructions = _normalize_instructions(
+                list_plan_instructions_for_run(db, fallback_run_id)
+            )
+            if fallback_instructions:
+                return fallback_run_id, fallback_instructions
+            return run_id, []
+
+        run = get_latest_successful_run_with_plan(db)
+        if run is None:
+            return None, []
+        selected_run_id = int(run.id)
         instructions = _normalize_instructions(list_plan_instructions_for_run(db, selected_run_id))
         return selected_run_id, instructions
 

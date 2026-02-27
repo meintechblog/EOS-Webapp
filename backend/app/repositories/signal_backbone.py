@@ -50,7 +50,6 @@ def ingest_signal_measurement(
     quality_status: str,
     source_type: str,
     run_id: int | None = None,
-    mapping_id: int | None = None,
     source_ref_id: int | None = None,
     tags_json: dict[str, Any] | None = None,
     ingested_at: datetime | None = None,
@@ -72,14 +71,13 @@ def ingest_signal_measurement(
             """
             INSERT INTO signal_measurements_raw
                 (signal_id, ts, value_num, value_text, value_bool, value_json,
-                 quality_status, source_type, run_id, mapping_id, source_ref_id, ingested_at, ingest_lag_ms)
+                 quality_status, source_type, run_id, source_ref_id, ingested_at, ingest_lag_ms)
             VALUES
                 (:signal_id, :ts, :value_num, :value_text, :value_bool, CAST(:value_json AS JSONB),
-                 :quality_status, :source_type, :run_id, :mapping_id, :source_ref_id, :ingested_at, :ingest_lag_ms)
+                 :quality_status, :source_type, :run_id, :source_ref_id, :ingested_at, :ingest_lag_ms)
             ON CONFLICT (
                 signal_id, ts, source_type,
                 COALESCE(run_id, 0),
-                COALESCE(mapping_id, 0),
                 COALESCE(source_ref_id, 0)
             )
             DO UPDATE SET
@@ -102,7 +100,6 @@ def ingest_signal_measurement(
             "quality_status": quality_status,
             "source_type": source_type,
             "run_id": run_id,
-            "mapping_id": mapping_id,
             "source_ref_id": source_ref_id,
             "ingested_at": ingest_ts,
             "ingest_lag_ms": ingest_lag_ms,
@@ -302,8 +299,7 @@ def fetch_signal_series(
                     m.value_json,
                     m.quality_status,
                     m.source_type,
-                    m.run_id,
-                    m.mapping_id
+                    m.run_id
                 FROM signal_measurements_raw m
                 JOIN signal_catalog c ON c.id = m.signal_id
                 WHERE c.signal_key = :signal_key
@@ -662,7 +658,9 @@ def _ingest_lag_ms(ingested_at: datetime, signal_ts: datetime) -> int | None:
     try:
         signal_ts_utc = signal_ts if signal_ts.tzinfo else signal_ts.replace(tzinfo=timezone.utc)
         delta = ingested_at - signal_ts_utc
-        return max(0, int(delta.total_seconds() * 1000))
+        lag_ms = max(0, int(delta.total_seconds() * 1000))
+        # DB column is INTEGER; clamp to avoid overflow for older backfilled points.
+        return min(lag_ms, 2_147_483_647)
     except Exception:
         return None
 

@@ -90,14 +90,45 @@ class EosClient:
             return [str(item) for item in payload]
         return []
 
-    def get_prediction_series(self, *, key: str) -> dict[str, Any]:
-        return self._request_json("GET", "v1/prediction/series", query={"key": key})
+    def get_prediction_series(
+        self,
+        *,
+        key: str,
+        start_datetime: datetime | None = None,
+        end_datetime: datetime | None = None,
+    ) -> dict[str, Any]:
+        query: dict[str, Any] = {"key": key}
+        if start_datetime is not None:
+            query["start_datetime"] = _format_datetime_utc(start_datetime)
+        if end_datetime is not None:
+            query["end_datetime"] = _format_datetime_utc(end_datetime)
+        return self._request_json("GET", "v1/prediction/series", query=query)
 
-    def get_prediction_list(self, *, key: str) -> list[Any]:
-        payload = self._request_json("GET", "v1/prediction/list", query={"key": key})
+    def get_prediction_list(
+        self,
+        *,
+        key: str,
+        start_datetime: datetime | None = None,
+        end_datetime: datetime | None = None,
+        interval: str | None = None,
+    ) -> list[Any]:
+        query: dict[str, Any] = {"key": key}
+        if start_datetime is not None:
+            query["start_datetime"] = _format_datetime_utc(start_datetime)
+        if end_datetime is not None:
+            query["end_datetime"] = _format_datetime_utc(end_datetime)
+        if interval is not None:
+            query["interval"] = interval
+        payload = self._request_json("GET", "v1/prediction/list", query=query)
         if isinstance(payload, list):
             return payload
         return []
+
+    def restart_server(self) -> dict[str, Any]:
+        payload = self._request_json("POST", "v1/admin/server/restart")
+        if isinstance(payload, dict):
+            return payload
+        return {"payload": payload}
 
     def trigger_prediction_update(
         self,
@@ -157,7 +188,15 @@ class EosClient:
             query["start_hour"] = str(start_hour)
         if ngen is not None:
             query["ngen"] = str(ngen)
-        return self._request_json("POST", "optimize", query=query or None, payload=payload)
+        # Legacy optimize can run significantly longer than regular metadata/config calls.
+        optimize_timeout_seconds = max(self._timeout_seconds, 120.0)
+        return self._request_json(
+            "POST",
+            "optimize",
+            query=query or None,
+            payload=payload,
+            timeout_seconds=optimize_timeout_seconds,
+        )
 
     def put_measurement_value(
         self,
@@ -202,12 +241,14 @@ class EosClient:
         *,
         query: dict[str, Any] | None = None,
         payload: Any | None = None,
+        timeout_seconds: float | None = None,
     ) -> Any:
         status_code, content_type, body = self._request_raw(
             method,
             path,
             query=query,
             payload=payload,
+            timeout_seconds=timeout_seconds,
         )
         if status_code not in (200, 201):
             raise EosApiError(status_code=status_code, detail=body or "Unexpected EOS response")
@@ -226,8 +267,15 @@ class EosClient:
         *,
         query: dict[str, Any] | None = None,
         payload: Any | None = None,
+        timeout_seconds: float | None = None,
     ) -> None:
-        status_code, _, body = self._request_raw(method, path, query=query, payload=payload)
+        status_code, _, body = self._request_raw(
+            method,
+            path,
+            query=query,
+            payload=payload,
+            timeout_seconds=timeout_seconds,
+        )
         if status_code not in (200, 201, 202, 204):
             raise EosApiError(status_code=status_code, detail=body or "Unexpected EOS response")
 
@@ -238,6 +286,7 @@ class EosClient:
         *,
         query: dict[str, Any] | None = None,
         payload: Any | None = None,
+        timeout_seconds: float | None = None,
     ) -> tuple[int, str, str]:
         endpoint = path.lstrip("/")
         url = urljoin(self._base_url, endpoint)
@@ -253,8 +302,13 @@ class EosClient:
             headers["Content-Type"] = "application/json"
 
         request = Request(url=url, method=method.upper(), data=data_bytes, headers=headers)
+        request_timeout = (
+            float(timeout_seconds)
+            if timeout_seconds is not None and float(timeout_seconds) > 0.0
+            else self._timeout_seconds
+        )
         try:
-            with urlopen(request, timeout=self._timeout_seconds) as response:
+            with urlopen(request, timeout=request_timeout) as response:
                 body = response.read().decode("utf-8", errors="replace")
                 return response.status, response.headers.get("content-type", ""), body
         except HTTPError as exc:

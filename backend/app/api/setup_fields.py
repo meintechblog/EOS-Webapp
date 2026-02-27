@@ -9,12 +9,15 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.dependencies import get_setup_field_service
 from app.schemas.setup_fields import (
+    SetupEntityMutateRequest,
+    SetupEntityMutateResponse,
     SetupExportResponse,
     SetupFieldPatchRequest,
     SetupFieldPatchResponse,
     SetupFieldResponse,
     SetupImportRequest,
     SetupImportResponse,
+    SetupLayoutResponse,
     SetupReadinessResponse,
     SetupSetRequest,
     SetupSetResponse,
@@ -41,6 +44,23 @@ def patch_setup_fields(
 ) -> SetupFieldPatchResponse:
     results = setup_service.patch_fields(db, updates=payload.updates)
     return SetupFieldPatchResponse(results=results)
+
+
+@router.get("/api/setup/layout", response_model=SetupLayoutResponse)
+def get_setup_layout(
+    db: Session = Depends(get_db),
+    setup_service: SetupFieldService = Depends(get_setup_field_service),
+) -> SetupLayoutResponse:
+    return setup_service.get_layout(db)
+
+
+@router.post("/api/setup/entities/mutate", response_model=SetupEntityMutateResponse)
+def post_setup_entity_mutate(
+    payload: SetupEntityMutateRequest,
+    db: Session = Depends(get_db),
+    setup_service: SetupFieldService = Depends(get_setup_field_service),
+) -> SetupEntityMutateResponse:
+    return setup_service.mutate_entity(db, request=payload)
 
 
 @router.get("/api/setup/readiness", response_model=SetupReadinessResponse)

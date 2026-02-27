@@ -7,15 +7,13 @@ from sqlalchemy.orm import Session
 
 from app.api.data_backbone import router as data_backbone_router
 from app.api.eos_fields import router as eos_fields_router
+from app.api.eos_output_signals import router as eos_output_signals_router
 from app.api.eos_runtime import router as eos_runtime_router
-from app.api.legacy_gone import router as legacy_gone_router
 from app.api.parameters import router as parameters_router
 from app.api.setup_fields import router as setup_fields_router
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.db.session import SessionLocal, check_db_connection, get_db
-from app.repositories.mappings import list_mappings
-from app.repositories.signal_backbone import infer_value_type, ingest_signal_measurement
 from app.services.data_pipeline import DataPipelineService
 from app.services.emr_pipeline import EmrPipelineService
 from app.services.eos_catalog import EosFieldCatalogService
@@ -23,7 +21,7 @@ from app.services.eos_client import EosClient
 from app.services.eos_measurement_sync import EosMeasurementSyncService
 from app.services.eos_orchestrator import EosOrchestratorService
 from app.services.eos_settings_validation import EosSettingsValidationService
-from app.services.output_dispatch import OutputDispatchService
+from app.services.output_projection import OutputProjectionService
 from app.services.parameter_profiles import ParameterProfileService
 from app.services.parameters_catalog import ParameterCatalogService
 from app.services.setup_fields import SetupFieldService
@@ -39,51 +37,16 @@ def _tail(path: Path, lines: int = 30) -> list[str]:
     return content[-lines:]
 
 
-def _canonical_unit_for_field(eos_field: str, unit: str | None) -> str | None:
-    field = eos_field.strip().lower()
-    if field.endswith("_w"):
-        return "W"
-    if field.endswith("_wh"):
-        return "Wh"
-    if field.endswith("_pct") or field.endswith("_percentage"):
-        return "%"
-    if "euro_pro_wh" in field:
-        return "EUR/Wh"
-    return unit
-
-
-def _seed_fixed_mapping_signals() -> None:
-    with SessionLocal() as db:
-        for mapping in list_mappings(db):
-            if not mapping.enabled or mapping.fixed_value is None:
-                continue
-            ingest_signal_measurement(
-                db,
-                signal_key=mapping.eos_field,
-                label=mapping.eos_field,
-                value_type=infer_value_type(mapping.fixed_value),
-                canonical_unit=_canonical_unit_for_field(mapping.eos_field, mapping.unit),
-                value=mapping.fixed_value,
-                ts=datetime.now(timezone.utc),
-                quality_status="ok",
-                source_type="fixed_input",
-                run_id=None,
-                mapping_id=mapping.id,
-                source_ref_id=None,
-                tags_json={
-                    "eos_field": mapping.eos_field,
-                    "source": "fixed",
-                },
-            )
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
     settings = get_settings()
     emr_pipeline_service = EmrPipelineService(settings=settings, session_factory=SessionLocal)
     data_pipeline_service = DataPipelineService(settings=settings, session_factory=SessionLocal)
-    eos_client = EosClient(base_url=settings.eos_base_url)
+    eos_client = EosClient(
+        base_url=settings.eos_base_url,
+        timeout_seconds=settings.eos_http_timeout_seconds,
+    )
     eos_validation_service = EosSettingsValidationService(eos_client=eos_client)
     parameter_catalog_service = ParameterCatalogService(eos_client=eos_client)
     parameter_profile_service = ParameterProfileService(
@@ -108,11 +71,9 @@ async def lifespan(app: FastAPI):
         settings=settings,
         session_factory=SessionLocal,
         eos_client=eos_client,
-        mqtt_service=None,
     )
-    output_dispatch_service = OutputDispatchService(
+    output_projection_service = OutputProjectionService(
         settings=settings,
-        session_factory=SessionLocal,
     )
 
     app.state.settings = settings
@@ -121,7 +82,7 @@ async def lifespan(app: FastAPI):
     app.state.eos_client = eos_client
     app.state.eos_measurement_sync_service = eos_measurement_sync_service
     app.state.eos_orchestrator_service = eos_orchestrator_service
-    app.state.output_dispatch_service = output_dispatch_service
+    app.state.output_projection_service = output_projection_service
     app.state.eos_settings_validation_service = eos_validation_service
     app.state.parameter_catalog_service = parameter_catalog_service
     app.state.parameter_profile_service = parameter_profile_service
@@ -134,19 +95,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
-    try:
-        _seed_fixed_mapping_signals()
-    except Exception:
-        pass
-
     data_pipeline_service.start()
     eos_orchestrator_service.start()
     eos_measurement_sync_service.start()
-    output_dispatch_service.start()
     try:
         yield
     finally:
-        output_dispatch_service.stop()
         eos_measurement_sync_service.stop()
         eos_orchestrator_service.stop()
         data_pipeline_service.stop()
@@ -155,10 +109,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="EOS-Webapp Backend", lifespan=lifespan)
 app.include_router(eos_fields_router)
 app.include_router(eos_runtime_router)
+app.include_router(eos_output_signals_router)
 app.include_router(data_backbone_router)
 app.include_router(parameters_router)
 app.include_router(setup_fields_router)
-app.include_router(legacy_gone_router)
 
 
 @app.get("/health")
@@ -199,9 +153,9 @@ def status(request: Request, db: Session = Depends(get_db)):
         "eos_measurement_sync_service",
         None,
     )
-    output_dispatch_service: OutputDispatchService | None = getattr(
+    output_projection_service: OutputProjectionService | None = getattr(
         request.app.state,
-        "output_dispatch_service",
+        "output_projection_service",
         None,
     )
     settings: Settings | None = getattr(request.app.state, "settings", None)
@@ -209,12 +163,6 @@ def status(request: Request, db: Session = Depends(get_db)):
     db_status: dict[str, object] = {"ok": db_ok}
     if db_error:
         db_status["error"] = db_error
-
-    mqtt_status: dict[str, object] = {
-        "enabled": False,
-        "input_ingest": "disabled_http_only",
-        "output_dispatch": "disabled_http_only",
-    }
 
     eos_status: dict[str, object]
     collector_status: dict[str, object]
@@ -286,21 +234,14 @@ def status(request: Request, db: Session = Depends(get_db)):
     else:
         measurement_sync_status = eos_measurement_sync_service.get_status_snapshot(db)
 
-    if output_dispatch_service is None:
-        output_dispatch_status = {
+    if output_projection_service is None:
+        output_projection_status = {
             "enabled": False,
-            "running": False,
-            "tick_seconds": None,
-            "heartbeat_seconds": None,
-            "last_tick_ts": None,
-            "last_status": None,
-            "last_error": "Output dispatch service not initialized",
-            "last_run_id": None,
-            "next_heartbeat_ts": None,
-            "force_in_progress": False,
+            "mode": None,
+            "last_error": "Output projection service not initialized",
         }
     else:
-        output_dispatch_status = output_dispatch_service.get_status_snapshot()
+        output_projection_status = output_projection_service.get_status_snapshot()
 
     if setup_field_service is None:
         setup_status = {
@@ -324,14 +265,13 @@ def status(request: Request, db: Session = Depends(get_db)):
         "progress_tail": _tail(PROGRESS_FILE, 40),
         "worklog_tail": _tail(WORKLOG_FILE, 40),
         "db": db_status,
-        "mqtt": mqtt_status,
         "eos": eos_status,
         "collector": collector_status,
         "parameters": parameters_status,
         "setup": setup_status,
         "emr": emr_status,
         "eos_measurement_sync": measurement_sync_status,
-        "output_dispatch": output_dispatch_status,
+        "output_projection": output_projection_status,
         "data_pipeline": {
             "last_rollup_run": data_pipeline_status.get("last_rollup_run"),
             "last_retention_run": data_pipeline_status.get("last_retention_run"),
@@ -348,9 +288,39 @@ def status(request: Request, db: Session = Depends(get_db)):
                 settings.http_override_active_seconds if settings else None
             ),
             "eos_sync_poll_seconds": settings.eos_sync_poll_seconds if settings else None,
+            "eos_http_timeout_seconds": (
+                settings.eos_http_timeout_seconds if settings else None
+            ),
             "eos_autoconfig_mode": settings.eos_autoconfig_mode if settings else None,
             "eos_autoconfig_interval_seconds": (
                 settings.eos_autoconfig_interval_seconds if settings else None
+            ),
+            "eos_run_artifact_wait_seconds": (
+                settings.eos_run_artifact_wait_seconds if settings else None
+            ),
+            "eos_run_artifact_poll_seconds": (
+                settings.eos_run_artifact_poll_seconds if settings else None
+            ),
+            "eos_price_backfill_enabled": (
+                settings.eos_price_backfill_enabled if settings else None
+            ),
+            "eos_price_backfill_target_hours": (
+                settings.eos_price_backfill_target_hours if settings else None
+            ),
+            "eos_price_backfill_min_history_hours": (
+                settings.eos_price_backfill_min_history_hours if settings else None
+            ),
+            "eos_price_backfill_cooldown_seconds": (
+                settings.eos_price_backfill_cooldown_seconds if settings else None
+            ),
+            "eos_price_backfill_restart_timeout_seconds": (
+                settings.eos_price_backfill_restart_timeout_seconds if settings else None
+            ),
+            "eos_price_backfill_settle_seconds": (
+                settings.eos_price_backfill_settle_seconds if settings else None
+            ),
+            "eos_visualize_safe_horizon_hours": (
+                settings.eos_visualize_safe_horizon_hours if settings else None
             ),
             "eos_actuation_enabled": settings.eos_actuation_enabled if settings else None,
             "data_raw_retention_days": settings.data_raw_retention_days if settings else None,
@@ -368,14 +338,13 @@ def status(request: Request, db: Session = Depends(get_db)):
                 settings.eos_measurement_sync_seconds if settings else None
             ),
             "output_http_dispatch_enabled": (
-                settings.output_http_dispatch_enabled if settings else None
+                getattr(settings, "output_http_dispatch_enabled", None) if settings else None
             ),
             "output_scheduler_tick_seconds": (
-                settings.output_scheduler_tick_seconds if settings else None
+                getattr(settings, "output_scheduler_tick_seconds", None) if settings else None
             ),
             "output_heartbeat_seconds": (
-                settings.output_heartbeat_seconds if settings else None
+                getattr(settings, "output_heartbeat_seconds", None) if settings else None
             ),
         },
     }
-

@@ -17,12 +17,10 @@ from app.repositories.emr_pipeline import (
     upsert_energy_emr,
     upsert_power_sample,
 )
-from app.repositories.mappings import EnabledMappingSnapshot
 from app.repositories.signal_backbone import ingest_signal_measurement
 
 
 class EmrPipelineService:
-    _MQTT_SOURCE = "mqtt"
     _HTTP_SOURCE = "http"
 
     def __init__(self, *, settings: Settings, session_factory: sessionmaker):
@@ -39,34 +37,6 @@ class EmrPipelineService:
             "grid_export_w",
             "battery_power_w",
         ]
-
-    def process_mapped_value(
-        self,
-        *,
-        mapping: EnabledMappingSnapshot,
-        transformed_value: str | None,
-        source_ts: datetime,
-        raw_payload: str,
-    ) -> None:
-        if not self._settings.emr_enabled:
-            return
-
-        source_ts_utc = _to_utc(source_ts)
-        power_values = self._derive_power_values(
-            eos_field=mapping.eos_field,
-            transformed_value=transformed_value,
-        )
-        if not power_values:
-            return
-
-        self._process_power_values(
-            power_values=power_values,
-            source_ts=source_ts_utc,
-            source=self._MQTT_SOURCE,
-            mapping_id=mapping.id,
-            raw_payload=raw_payload,
-            log_context=f"eos_field={mapping.eos_field}",
-        )
 
     def process_signal_value(
         self,
@@ -100,7 +70,6 @@ class EmrPipelineService:
             power_values=power_values,
             source_ts=source_ts_utc,
             source=persisted_source,
-            mapping_id=None,
             raw_payload=raw_payload if raw_payload is not None else str(value),
             log_context=f"signal_key={signal_key}",
         )
@@ -111,7 +80,6 @@ class EmrPipelineService:
         power_values: dict[str, float],
         source_ts: datetime,
         source: str,
-        mapping_id: int | None,
         raw_payload: str | None,
         log_context: str,
     ) -> None:
@@ -132,7 +100,6 @@ class EmrPipelineService:
                         value_w=normalized_value,
                         source=source,
                         quality="ok",
-                        mapping_id=mapping_id,
                         raw_payload=raw_payload,
                     )
                     normalized_values[key] = normalized_value
@@ -216,7 +183,6 @@ class EmrPipelineService:
                 quality_status="derived",
                 source_type="derived",
                 run_id=None,
-                mapping_id=None,
                 source_ref_id=None,
                 tags_json={"source": "emr_pipeline", "power_key": power_key},
             )
@@ -273,7 +239,6 @@ class EmrPipelineService:
             quality_status="derived",
             source_type="derived",
             run_id=None,
-            mapping_id=None,
             source_ref_id=None,
             tags_json={"source": "emr_pipeline", "power_key": power_key},
         )

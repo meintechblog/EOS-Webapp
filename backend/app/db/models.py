@@ -8,247 +8,16 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Identity,
-    Index,
     Integer,
-    SmallInteger,
     String,
     Text,
     UniqueConstraint,
     func,
-    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
-
-
-class InputMapping(Base):
-    __tablename__ = "input_mappings"
-    __table_args__ = (
-        UniqueConstraint("eos_field", name="uq_input_mappings_eos_field"),
-        Index(
-            "uq_input_mappings_channel_topic",
-            "channel_id",
-            "mqtt_topic",
-            unique=True,
-            postgresql_where=text("mqtt_topic IS NOT NULL"),
-        ),
-        CheckConstraint(
-            "sign_convention IN ('canonical','unknown','positive_is_import','positive_is_export')",
-            name="ck_input_mappings_sign_convention",
-        ),
-        CheckConstraint(
-            "("
-            "(fixed_value IS NULL AND mqtt_topic IS NOT NULL AND channel_id IS NOT NULL)"
-            " OR "
-            "(fixed_value IS NOT NULL AND mqtt_topic IS NULL AND channel_id IS NULL)"
-            ")",
-            name="ck_input_mappings_value_source",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
-    eos_field: Mapped[str] = mapped_column(String(128), nullable=False)
-    mqtt_topic: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    channel_id: Mapped[int | None] = mapped_column(
-        BigInteger,
-        ForeignKey("input_channels.id", ondelete="RESTRICT"),
-    )
-    fixed_value: Mapped[str | None] = mapped_column(Text, nullable=True)
-    payload_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    timestamp_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    unit: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    value_multiplier: Mapped[float] = mapped_column(
-        Float,
-        default=1.0,
-        server_default="1.0",
-        nullable=False,
-    )
-    sign_convention: Mapped[str] = mapped_column(
-        String(32),
-        default="canonical",
-        server_default="canonical",
-        nullable=False,
-    )
-    enabled: Mapped[bool] = mapped_column(default=True, nullable=False, server_default="true")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    telemetry_events: Mapped[list["TelemetryEvent"]] = relationship(
-        back_populates="mapping",
-        cascade="all, delete-orphan",
-    )
-    channel: Mapped["InputChannel | None"] = relationship(back_populates="mappings")
-
-    @property
-    def input_key(self) -> str | None:
-        return self.mqtt_topic
-
-    @property
-    def channel_code(self) -> str | None:
-        if self.channel is None:
-            return None
-        return self.channel.code
-
-    @property
-    def channel_type(self) -> str | None:
-        if self.channel is None:
-            return None
-        return self.channel.channel_type
-
-
-class InputChannel(Base):
-    __tablename__ = "input_channels"
-    __table_args__ = (
-        UniqueConstraint("code", name="uq_input_channels_code"),
-        CheckConstraint(
-            "channel_type IN ('mqtt','http')",
-            name="ck_input_channels_type",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
-    code: Mapped[str] = mapped_column(String(64), nullable=False)
-    name: Mapped[str] = mapped_column(String(128), nullable=False)
-    channel_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
-    is_default: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=False,
-        server_default="false",
-    )
-    config_json: Mapped[dict] = mapped_column(
-        JSONB,
-        nullable=False,
-        default=dict,
-        server_default="'{}'",
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    mappings: Mapped[list[InputMapping]] = relationship(back_populates="channel")
-    observations: Mapped[list["InputObservation"]] = relationship(
-        back_populates="channel",
-        cascade="all, delete-orphan",
-    )
-    parameter_bindings: Mapped[list["ParameterBinding"]] = relationship(
-        back_populates="channel",
-        cascade="all, delete-orphan",
-    )
-    parameter_input_events: Mapped[list["ParameterInputEvent"]] = relationship(
-        back_populates="channel",
-    )
-
-
-class InputObservation(Base):
-    __tablename__ = "input_observations"
-    __table_args__ = (
-        UniqueConstraint("channel_id", "input_key", name="uq_input_observations_channel_key"),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
-    channel_id: Mapped[int] = mapped_column(
-        BigInteger,
-        ForeignKey("input_channels.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    input_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    normalized_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    first_seen: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
-    message_count: Mapped[int] = mapped_column(
-        BigInteger,
-        nullable=False,
-        server_default="1",
-        default=1,
-    )
-    last_meta_json: Mapped[dict] = mapped_column(
-        JSONB,
-        nullable=False,
-        default=dict,
-        server_default="'{}'",
-    )
-
-    channel: Mapped[InputChannel] = relationship(back_populates="observations")
-
-
-class TelemetryEvent(Base):
-    __tablename__ = "telemetry_events"
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
-    mapping_id: Mapped[int] = mapped_column(
-        BigInteger,
-        ForeignKey("input_mappings.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    eos_field: Mapped[str] = mapped_column(String(128), nullable=False)
-    raw_payload: Mapped[str] = mapped_column(Text, nullable=False)
-    parsed_value: Mapped[str | None] = mapped_column(Text, nullable=True)
-    ts: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-    mapping: Mapped[InputMapping] = relationship(back_populates="telemetry_events")
-
-
-class MqttTopicObservation(Base):
-    __tablename__ = "mqtt_topic_observations"
-    __table_args__ = (UniqueConstraint("mqtt_topic", name="uq_mqtt_topic_observations_topic"),)
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
-    mqtt_topic: Mapped[str] = mapped_column(String(255), nullable=False)
-    first_seen: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
-    message_count: Mapped[int] = mapped_column(
-        BigInteger,
-        nullable=False,
-        server_default="1",
-        default=1,
-    )
-    last_retain: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        server_default="false",
-        default=False,
-    )
-    last_qos: Mapped[int] = mapped_column(
-        SmallInteger,
-        nullable=False,
-        server_default="0",
-        default=0,
-    )
 
 
 class EosRun(Base):
@@ -276,19 +45,7 @@ class EosRun(Base):
         back_populates="run",
         cascade="all, delete-orphan",
     )
-    prediction_points: Mapped[list["EosPredictionPoint"]] = relationship(
-        back_populates="run",
-        cascade="all, delete-orphan",
-    )
     plan_instructions: Mapped[list["EosPlanInstruction"]] = relationship(
-        back_populates="run",
-        cascade="all, delete-orphan",
-    )
-    mqtt_output_events: Mapped[list["EosMqttOutputEvent"]] = relationship(
-        back_populates="run",
-        cascade="all, delete-orphan",
-    )
-    output_dispatch_events: Mapped[list["OutputDispatchEvent"]] = relationship(
         back_populates="run",
         cascade="all, delete-orphan",
     )
@@ -315,27 +72,6 @@ class EosArtifact(Base):
     )
 
     run: Mapped[EosRun] = relationship(back_populates="artifacts")
-
-
-class EosPredictionPoint(Base):
-    __tablename__ = "eos_prediction_points"
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
-    run_id: Mapped[int] = mapped_column(
-        BigInteger,
-        ForeignKey("eos_runs.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    prediction_key: Mapped[str] = mapped_column(String(128), nullable=False)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    value: Mapped[float | None] = mapped_column(Float)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-    run: Mapped[EosRun] = relationship(back_populates="prediction_points")
 
 
 class EosPlanInstruction(Base):
@@ -365,132 +101,6 @@ class EosPlanInstruction(Base):
     )
 
     run: Mapped[EosRun] = relationship(back_populates="plan_instructions")
-
-
-class EosMqttOutputEvent(Base):
-    __tablename__ = "eos_mqtt_output_events"
-    __table_args__ = (
-        CheckConstraint(
-            "output_kind IN ('plan','solution','command','preview','unknown')",
-            name="ck_eos_mqtt_output_events_output_kind",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
-    run_id: Mapped[int] = mapped_column(
-        BigInteger,
-        ForeignKey("eos_runs.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    topic: Mapped[str] = mapped_column(String(255), nullable=False)
-    payload_json: Mapped[dict | list] = mapped_column(JSONB, nullable=False)
-    qos: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1, server_default="1")
-    retain: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
-    output_kind: Mapped[str] = mapped_column(
-        String(16),
-        nullable=False,
-        default="unknown",
-        server_default="unknown",
-    )
-    resource_id: Mapped[str | None] = mapped_column(String(128))
-    publish_status: Mapped[str] = mapped_column(String(32), nullable=False)
-    error_text: Mapped[str | None] = mapped_column(Text)
-    published_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-    run: Mapped[EosRun] = relationship(back_populates="mqtt_output_events")
-
-
-class ControlTarget(Base):
-    __tablename__ = "control_targets"
-    __table_args__ = (UniqueConstraint("resource_id", name="uq_control_targets_resource_id"),)
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
-    resource_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    command_topic: Mapped[str] = mapped_column(String(255), nullable=False)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
-    dry_run_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
-    qos: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1, server_default="1")
-    retain: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
-    payload_template_json: Mapped[dict | list | None] = mapped_column(JSONB)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-
-class OutputTarget(Base):
-    __tablename__ = "output_targets"
-    __table_args__ = (
-        UniqueConstraint("resource_id", name="uq_output_targets_resource_id"),
-        CheckConstraint(
-            "method IN ('POST','PUT','PATCH')",
-            name="ck_output_targets_method",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
-    resource_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    webhook_url: Mapped[str] = mapped_column(String(512), nullable=False)
-    method: Mapped[str] = mapped_column(String(8), nullable=False, default="POST", server_default="POST")
-    headers_json: Mapped[dict | list] = mapped_column(
-        JSONB,
-        nullable=False,
-        default=dict,
-        server_default=text("'{}'::jsonb"),
-    )
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
-    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=10, server_default="10")
-    retry_max: Mapped[int] = mapped_column(Integer, nullable=False, default=2, server_default="2")
-    payload_template_json: Mapped[dict | list | None] = mapped_column(JSONB)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-
-class OutputDispatchEvent(Base):
-    __tablename__ = "output_dispatch_events"
-    __table_args__ = (
-        UniqueConstraint("idempotency_key", name="uq_output_dispatch_events_idempotency_key"),
-        CheckConstraint(
-            "dispatch_kind IN ('scheduled','heartbeat','force')",
-            name="ck_output_dispatch_events_dispatch_kind",
-        ),
-        CheckConstraint(
-            "status IN ('sent','blocked','failed','retrying','skipped_no_target')",
-            name="ck_output_dispatch_events_status",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
-    run_id: Mapped[int | None] = mapped_column(
-        BigInteger,
-        ForeignKey("eos_runs.id", ondelete="CASCADE"),
-    )
-    resource_id: Mapped[str | None] = mapped_column(String(128))
-    execution_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    dispatch_kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    target_url: Mapped[str | None] = mapped_column(String(512))
-    request_payload_json: Mapped[dict | list] = mapped_column(JSONB, nullable=False)
-    status: Mapped[str] = mapped_column(String(24), nullable=False)
-    http_status: Mapped[int | None] = mapped_column(Integer)
-    error_text: Mapped[str | None] = mapped_column(Text)
-    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-    run: Mapped[EosRun | None] = relationship(back_populates="output_dispatch_events")
 
 
 class ParameterProfile(Base):
@@ -573,110 +183,6 @@ class ParameterProfileRevision(Base):
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     profile: Mapped[ParameterProfile] = relationship(back_populates="revisions")
-    parameter_input_events: Mapped[list["ParameterInputEvent"]] = relationship(
-        back_populates="revision",
-    )
-
-
-class ParameterBinding(Base):
-    __tablename__ = "parameter_bindings"
-    __table_args__ = (
-        UniqueConstraint(
-            "channel_id",
-            "input_key",
-            name="uq_parameter_bindings_channel_input_key",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
-    parameter_key: Mapped[str] = mapped_column(String(160), nullable=False)
-    selector_value: Mapped[str | None] = mapped_column(String(128))
-    channel_id: Mapped[int] = mapped_column(
-        BigInteger,
-        ForeignKey("input_channels.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    input_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    payload_path: Mapped[str | None] = mapped_column(String(255))
-    timestamp_path: Mapped[str | None] = mapped_column(String(255))
-    incoming_unit: Mapped[str | None] = mapped_column(String(32))
-    value_multiplier: Mapped[float] = mapped_column(
-        Float,
-        nullable=False,
-        default=1.0,
-        server_default="1.0",
-    )
-    enabled: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=True,
-        server_default="true",
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    channel: Mapped[InputChannel] = relationship(back_populates="parameter_bindings")
-    events: Mapped[list["ParameterInputEvent"]] = relationship(
-        back_populates="binding",
-    )
-
-
-class ParameterInputEvent(Base):
-    __tablename__ = "parameter_input_events"
-    __table_args__ = (
-        CheckConstraint(
-            "apply_status IN ('accepted','rejected','applied','apply_failed','ignored_unbound','blocked_no_active_profile')",
-            name="ck_parameter_input_events_apply_status",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=False), primary_key=True)
-    binding_id: Mapped[int | None] = mapped_column(
-        BigInteger,
-        ForeignKey("parameter_bindings.id", ondelete="SET NULL"),
-    )
-    channel_id: Mapped[int] = mapped_column(
-        BigInteger,
-        ForeignKey("input_channels.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    input_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    normalized_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    raw_payload: Mapped[str] = mapped_column(Text, nullable=False)
-    parsed_value_text: Mapped[str | None] = mapped_column(Text)
-    event_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    revision_id: Mapped[int | None] = mapped_column(
-        BigInteger,
-        ForeignKey("parameter_profile_revisions.id", ondelete="SET NULL"),
-    )
-    apply_status: Mapped[str] = mapped_column(String(24), nullable=False)
-    error_text: Mapped[str | None] = mapped_column(Text)
-    meta_json: Mapped[dict] = mapped_column(
-        JSONB,
-        nullable=False,
-        default=dict,
-        server_default="'{}'",
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-    binding: Mapped[ParameterBinding | None] = relationship(back_populates="events")
-    channel: Mapped[InputChannel] = relationship(back_populates="parameter_input_events")
-    revision: Mapped[ParameterProfileRevision | None] = relationship(
-        back_populates="parameter_input_events"
-    )
 
 
 class SetupFieldEvent(Base):
@@ -750,7 +256,7 @@ class SignalMeasurementRaw(Base):
         ),
         CheckConstraint(
             "source_type IN "
-            "('mqtt_input','http_input','param_input','fixed_input','eos_prediction','eos_plan','eos_solution','device_feedback','derived')",
+            "('http_input','param_input','fixed_input','eos_prediction','eos_plan','eos_solution','device_feedback','derived')",
             name="ck_signal_measurements_raw_source_type",
         ),
         {"postgresql_partition_by": "RANGE (ts)"},
@@ -777,10 +283,6 @@ class SignalMeasurementRaw(Base):
     run_id: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey("eos_runs.id", ondelete="SET NULL"),
-    )
-    mapping_id: Mapped[int | None] = mapped_column(
-        BigInteger,
-        ForeignKey("input_mappings.id", ondelete="SET NULL"),
     )
     source_ref_id: Mapped[int | None] = mapped_column(BigInteger)
     ingested_at: Mapped[datetime] = mapped_column(
@@ -852,6 +354,40 @@ class EosRunInputSnapshot(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+
+
+class RuntimePreference(Base):
+    __tablename__ = "runtime_preferences"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value_json: Mapped[dict | list | str | int | float | bool | None] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class OutputSignalAccessState(Base):
+    __tablename__ = "output_signal_access_state"
+
+    signal_key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    resource_id: Mapped[str | None] = mapped_column(String(128))
+    last_fetch_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_fetch_client: Mapped[str | None] = mapped_column(String(128))
+    fetch_count: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -962,10 +498,6 @@ class PowerSample(Base):
         nullable=False,
         default="ok",
         server_default="ok",
-    )
-    mapping_id: Mapped[int | None] = mapped_column(
-        BigInteger,
-        ForeignKey("input_mappings.id", ondelete="SET NULL"),
     )
     raw_payload: Mapped[str | None] = mapped_column(Text)
     ingested_at: Mapped[datetime] = mapped_column(

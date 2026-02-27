@@ -28,9 +28,9 @@ Primary file:
 
 Key parts:
 
-- `_UI_TO_STORAGE_FACTORS`: converts UI input -> internal storage.
+- `_UI_TO_STORAGE_FACTORS` + `_UI_TO_STORAGE_FACTOR_PATTERNS`: converts UI input -> internal storage (also for dynamic repeatable indices).
 - `_build_field_state(...)`: converts internal value -> UI value.
-- `_param_path_to_field_id(...)`: maps `/eos/set/param/...` path aliases and scales legacy paths.
+- `_param_path_to_field_id(...)`: maps `/eos/set/param/...` path aliases (including dynamic `pv_plane`, `electric_vehicle`, `home_appliance`, `home_appliance_window`) and scales legacy paths.
 - `_resolve_signal_field_id_and_input_scale(...)`: accepts `*_kw` and legacy `*_w`.
 - `_signal_export_key_from_internal(...)`: exports setup signal keys as `*_kw` instead of `*_w`.
 
@@ -38,7 +38,10 @@ Key parts:
 
 Preferred UI-facing paths use explicit UI units:
 
-- `.../capacity_kwh`
+- `pvforecast/planes/{idx}/inverter_paco_kw`
+- `devices/batteries/{selector}/capacity_kwh`
+- `devices/electric_vehicles/{selector}/capacity_kwh`
+- `devices/home_appliances/{selector}/consumption_kwh`
 - `.../min_charge_power_kw`
 - `.../max_charge_power_kw`
 - `.../max_power_kw`
@@ -46,6 +49,7 @@ Preferred UI-facing paths use explicit UI units:
 - `.../charges_ct_per_kwh`
 - `.../feed_in_tariff_ct_per_kwh`
 - `.../signal/*_kw`
+- `devices/home_appliances/{selector}/time_windows/windows/{idx}/duration_h`
 
 Legacy aliases are still accepted for compatibility (for example `*_w`, `capacity_wh`, `charges_kwh`, `feed_in_tariff_kwh`) but are converted internally and should not be shown in UI templates.
 

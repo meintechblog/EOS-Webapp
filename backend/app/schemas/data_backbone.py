@@ -35,7 +35,6 @@ class SignalSeriesPointResponse(BaseModel):
     quality_status: str | None = None
     source_type: str | None = None
     run_id: int | None = None
-    mapping_id: int | None = None
     min_num: float | None = None
     max_num: float | None = None
     avg_num: float | None = None
@@ -75,7 +74,6 @@ class PowerSamplePointResponse(BaseModel):
     value_w: float
     source: str
     quality: str
-    mapping_id: int | None = None
     raw_payload: str | None = None
     ingested_at: datetime | None = None
 
