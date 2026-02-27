@@ -44,14 +44,14 @@ docker-compose -f infra/docker-compose.yml exec backend alembic upgrade head
 1. Katalog und Profile:
 
 ```bash
-curl -s http://192.168.3.157:8080/api/parameters/catalog | jq
-curl -s http://192.168.3.157:8080/api/parameters/profiles | jq
+curl -s http://<host-ip>:8080/api/parameters/catalog | jq
+curl -s http://<host-ip>:8080/api/parameters/profiles | jq
 ```
 
 2. Profil erstellen:
 
 ```bash
-curl -s -X POST http://192.168.3.157:8080/api/parameters/profiles \
+curl -s -X POST http://<host-ip>:8080/api/parameters/profiles \
   -H "Content-Type: application/json" \
   -d '{
     "name":"Anlage-Testprofil",
@@ -63,8 +63,8 @@ curl -s -X POST http://192.168.3.157:8080/api/parameters/profiles \
 3. Draft validieren und anwenden:
 
 ```bash
-curl -s -X POST http://192.168.3.157:8080/api/parameters/profiles/2/validate | jq
-curl -s -X POST http://192.168.3.157:8080/api/parameters/profiles/2/apply \
+curl -s -X POST http://<host-ip>:8080/api/parameters/profiles/2/validate | jq
+curl -s -X POST http://<host-ip>:8080/api/parameters/profiles/2/apply \
   -H "Content-Type: application/json" \
   -d '{"set_active_profile":true}' | jq
 ```
@@ -72,9 +72,9 @@ curl -s -X POST http://192.168.3.157:8080/api/parameters/profiles/2/apply \
 4. Export/Import strict:
 
 ```bash
-curl -s "http://192.168.3.157:8080/api/parameters/profiles/2/export?revision=draft&include_secrets=false" | jq
+curl -s "http://<host-ip>:8080/api/parameters/profiles/2/export?revision=draft&include_secrets=false" | jq
 
-curl -s -X POST http://192.168.3.157:8080/api/parameters/profiles/2/import/preview \
+curl -s -X POST http://<host-ip>:8080/api/parameters/profiles/2/import/preview \
   -H "Content-Type: application/json" \
   -d '{"package_json":{"format":"eos-webapp.parameters.v1","payload":{"unknown_field":123}}}' | jq
 ```

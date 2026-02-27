@@ -71,17 +71,17 @@ Migration `20260220_0006_signal_backbone.py` adds:
 ## Quick verification
 
 ```bash
-curl -s http://192.168.3.157:8080/api/data/signals | jq
-curl -s "http://192.168.3.157:8080/api/data/latest?limit=5" | jq
-curl -s "http://192.168.3.157:8080/api/data/series?signal_key=battery_power_w&resolution=raw" | jq
-curl -s "http://192.168.3.157:8080/api/data/retention/status" | jq
-curl -s "http://192.168.3.157:8080/status" | jq '.data_pipeline'
+curl -s http://<host-ip>:8080/api/data/signals | jq
+curl -s "http://<host-ip>:8080/api/data/latest?limit=5" | jq
+curl -s "http://<host-ip>:8080/api/data/series?signal_key=battery_power_w&resolution=raw" | jq
+curl -s "http://<host-ip>:8080/api/data/retention/status" | jq
+curl -s "http://<host-ip>:8080/status" | jq '.data_pipeline'
 ```
 
 Run-context check:
 
 ```bash
-curl -s http://192.168.3.157:8080/api/eos/runs/9/context | jq
+curl -s http://<host-ip>:8080/api/eos/runs/9/context | jq
 ```
 
 Expected:

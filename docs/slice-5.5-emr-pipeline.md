@@ -81,16 +81,16 @@ Migration `20260220_0007_emr_pipeline.py` adds:
 ## Quick verification
 
 ```bash
-curl -s http://192.168.3.157:8080/api/data/power/latest | jq
-curl -s "http://192.168.3.157:8080/api/data/power/series?key=house_load_w" | jq
+curl -s http://<host-ip>:8080/api/data/power/latest | jq
+curl -s "http://<host-ip>:8080/api/data/power/series?key=house_load_w" | jq
 
-curl -s http://192.168.3.157:8080/api/data/emr/latest | jq
-curl -s "http://192.168.3.157:8080/api/data/emr/series?emr_key=house_load_emr_kwh" | jq
+curl -s http://<host-ip>:8080/api/data/emr/latest | jq
+curl -s "http://<host-ip>:8080/api/data/emr/series?emr_key=house_load_emr_kwh" | jq
 
-curl -s http://192.168.3.157:8080/api/eos/measurement-sync/status | jq
-curl -s -X POST http://192.168.3.157:8080/api/eos/measurement-sync/force | jq
+curl -s http://<host-ip>:8080/api/eos/measurement-sync/status | jq
+curl -s -X POST http://<host-ip>:8080/api/eos/measurement-sync/force | jq
 
-curl -s http://192.168.3.157:8080/status | jq '.emr, .eos_measurement_sync'
+curl -s http://<host-ip>:8080/status | jq '.emr, .eos_measurement_sync'
 ```
 
 ## Notes
