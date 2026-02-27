@@ -129,6 +129,10 @@ function toInputString(field: SetupField): string {
   if (Array.isArray(value)) {
     return value.map((item) => String(item)).join(", ");
   }
+  if (field.value_type === "number" && typeof value === "number" && Number.isFinite(value)) {
+    const maxDecimals = field.unit === "kW" ? 3 : 6;
+    return String(Number(value.toFixed(maxDecimals)));
+  }
   return String(value);
 }
 
