@@ -129,9 +129,17 @@ function toInputString(field: SetupField): string {
   if (Array.isArray(value)) {
     return value.map((item) => String(item)).join(", ");
   }
-  if (field.value_type === "number" && typeof value === "number" && Number.isFinite(value)) {
-    const maxDecimals = field.unit === "kW" ? 3 : 6;
-    return String(Number(value.toFixed(maxDecimals)));
+  if (field.value_type === "number") {
+    const numericValue =
+      typeof value === "number"
+        ? value
+        : typeof value === "string"
+          ? Number(value.trim())
+          : null;
+    if (numericValue !== null && Number.isFinite(numericValue)) {
+      const maxDecimals = field.group === "live" || field.unit === "kW" ? 3 : 6;
+      return String(Number(numericValue.toFixed(maxDecimals)));
+    }
   }
   return String(value);
 }
