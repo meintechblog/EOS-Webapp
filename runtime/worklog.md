@@ -875,7 +875,7 @@
 
 ## 2026-02-27 (UI rounding + docs consistency)
 - Fixed setup number input rendering to avoid floating-point display artifacts.
-- `kW` values now render with max 3 decimals in operator-facing setup UI.
+- Numeric setup `live` signal values now render with max 3 decimals in operator-facing setup UI.
 - Added doc clarifications for the precision rule:
   - `README.md` (`UI Unit Contract`)
   - `docs/ui-unit-policy.md` (`Display precision`)

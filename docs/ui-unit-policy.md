@@ -22,8 +22,8 @@ But all conversions must happen transparently so operators only see `ct/kWh`, `k
 
 ## Display precision (operator UI)
 
-To avoid floating-point artifacts in the UI, power values shown in `kW` must be
-formatted with max `3` decimals (for example `2.752` instead of
+To avoid floating-point artifacts in the UI, all numeric setup `live` signal
+values must be formatted with max `3` decimals (for example `2.752` instead of
 `2.7520000000000002`).
 
 This is a display rule. Internal numeric precision may remain unchanged.
